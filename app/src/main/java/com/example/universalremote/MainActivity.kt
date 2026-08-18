@@ -93,10 +93,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun addDevice(device: NearbyDevice) = runOnUiThread {
-        if (devices.put(device.id, device) == null) {
-            deviceList.addView(deviceCard(device), LinearLayout.LayoutParams(-1, dp(88)).apply { setMargins(0, 0, 0, dp(10)) })
-            count.text = devices.size.toString(); hint.text = plural(devices.size); scanButton.text = "↻  ИСКАТЬ ЕЩЁ"
-        }
+        devices[device.id] = device
+        renderDevices()
+        count.text = devices.size.toString(); hint.text = plural(devices.size); scanButton.text = "↻  ИСКАТЬ ЕЩЁ"
+    }
+
+    private fun renderDevices() {
+        deviceList.removeAllViews()
+        devices.values.sortedWith(compareBy<NearbyDevice> { it.distanceMeters == null }.thenBy { it.distanceMeters ?: Double.MAX_VALUE })
+            .forEach { deviceList.addView(deviceCard(it), LinearLayout.LayoutParams(-1, dp(92)).apply { setMargins(0, 0, 0, dp(10)) }) }
     }
 
     private fun deviceCard(d: NearbyDevice): View {
@@ -109,15 +114,18 @@ class MainActivity : AppCompatActivity() {
         row.addView(icon, LinearLayout.LayoutParams(dp(54), dp(54)))
         val copy = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), 0, dp(8), 0) }
         copy.addView(text(d.name.take(32), 16f, Color.WHITE, true))
-        copy.addView(text("${d.kind}  •  ${d.protocol}", 12f, c("#91A5C2"), false).apply { setPadding(0, dp(4), 0, 0) })
+        val proximity = d.distanceMeters?.let { "≈ %.1f м".format(it) } ?: "в локальной сети"
+        val details = listOfNotNull(d.brand, d.protocol, proximity).joinToString("  •  ")
+        copy.addView(text(details, 12f, c("#91A5C2"), false).apply { setPadding(0, dp(4), 0, 0) })
         row.addView(copy, LinearLayout.LayoutParams(0, -2, 1f)); row.addView(text("›", 30f, c("#72F1CE"), false))
         return row
     }
 
     private fun showDevice(d: NearbyDevice) {
         val state = if (d.controllable) "Доступно после безопасного сопряжения" else "Нужен модуль производителя"
+        val range = d.distanceMeters?.let { "≈ %.1f м (оценка по сигналу ${d.signalDbm} dBm)".format(it) } ?: "Устройство обнаружено в локальной сети"
         AlertDialog.Builder(this).setTitle("${iconFor(d.kind)}  ${d.name}")
-            .setMessage("Тип: ${d.kind}\nПротокол: ${d.protocol}\nАдрес: ${d.address}\n\n$state")
+            .setMessage("Тип: ${d.kind}\nБренд: ${d.brand ?: "не определён"}\nПротокол: ${d.protocol}\nРасстояние: $range\nАдрес: ${d.address}\n\n$state")
             .setPositiveButton("Понятно", null).show()
     }
 
@@ -128,7 +136,17 @@ class MainActivity : AppCompatActivity() {
         shape = GradientDrawable.RECTANGLE; setColor(fill); cornerRadius = dp(radius).toFloat(); if (stroke != null) setStroke(dp(1), stroke)
     }
     private fun iconFor(kind: String) = when {
-        kind.contains("ТВ") -> "▣"; kind.contains("дом") -> "⌂"; kind.contains("Bluetooth") -> "ᛒ"; kind.contains("Принтер") -> "▤"; else -> "◆"
+        kind.contains("Телевизор") || kind.contains("ТВ") -> "▣"
+        kind.contains("Лампа") -> "☼"
+        kind.contains("Проектор") -> "◉"
+        kind.contains("Телефон") -> "▯"
+        kind.contains("Аудио") -> "♫"
+        kind.contains("Часы") -> "◷"
+        kind.contains("Аксессуар") -> "✣"
+        kind.contains("дом") -> "⌂"
+        kind.contains("Bluetooth") -> "ᛒ"
+        kind.contains("Принтер") -> "▤"
+        else -> "◆"
     }
     private fun plural(n: Int) = when {
         n % 10 == 1 && n % 100 != 11 -> "устройство найдено"

@@ -6,5 +6,8 @@ data class NearbyDevice(
     val kind: String,
     val protocol: String,
     val address: String,
-    val controllable: Boolean = false
+    val controllable: Boolean = false,
+    val signalDbm: Int? = null,
+    val distanceMeters: Double? = null,
+    val brand: String? = null
 )
