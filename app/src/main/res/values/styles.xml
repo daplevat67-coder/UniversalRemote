@@ -1,0 +1,11 @@
+<resources>
+    <style name="Theme.UniversalRemote" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#72F1CE</item>
+        <item name="colorPrimaryVariant">#36BFA1</item>
+        <item name="colorSecondary">#72F1CE</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:statusBarColor">#07111F</item>
+        <item name="android:navigationBarColor">#07111F</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
