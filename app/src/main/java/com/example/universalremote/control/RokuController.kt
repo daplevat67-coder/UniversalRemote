@@ -16,7 +16,10 @@ class RokuController {
             conn.connectTimeout = 1500; conn.readTimeout = 1800; conn.requestMethod = "POST"; conn.doOutput = true
             conn.outputStream.use { }
             val code = conn.responseCode
-            if (code !in 200..299) error("Roku ECP HTTP $code")
+            when (code) {
+                401, 403 -> error("Roku запретил ECP-команду. На Roku откройте Settings → System → Advanced system settings → Control by mobile apps и включите управление")
+                !in 200..299 -> error("Roku ECP HTTP $code")
+            }
             Result(true, "Roku: $key")
         }.getOrElse { Result(false, it.message ?: "Roku не ответил") })
     }

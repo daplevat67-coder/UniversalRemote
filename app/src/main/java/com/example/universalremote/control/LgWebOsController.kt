@@ -164,7 +164,7 @@ class LgWebOsController(context: Context) {
         ))
         val manifest = JSONObject()
             .put("manifestVersion", 1)
-            .put("appVersion", "0.6.0")
+            .put("appVersion", "0.7.0")
             .put("signed", JSONObject().put("created", "2026-08-20").put("appId", "com.example.universalremote").put("vendorId", "com.example.universalremote").put("localizedAppNames", JSONObject().put("", "Universal Remote")).put("localizedVendorNames", JSONObject().put("", "Universal Remote")).put("permissions", permissions).put("serial", "1"))
             .put("permissions", permissions)
         val payload = JSONObject().put("forcePairing", false).put("pairingType", "PROMPT").put("manifest", manifest)

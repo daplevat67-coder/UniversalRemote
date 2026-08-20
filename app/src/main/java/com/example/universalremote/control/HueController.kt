@@ -38,6 +38,30 @@ class HueController(context: Context) {
     fun isPaired(host: String): Boolean = !prefs.getString("key_$host", null).isNullOrBlank()
     fun forget(host: String) { prefs.edit().remove("key_$host").remove("fp_$host").remove("scheme_$host").apply() }
 
+
+    /** Passive bridge identification; no link-button authorization is requested. */
+    fun probe(host: String, callback: (Result) -> Unit) {
+        val urls = listOf("https://$host/api/config", "http://$host/api/config")
+        fun attempt(index: Int) {
+            if (index >= urls.size) return callback(Result(false, "Philips Hue Bridge API не найден"))
+            client.newCall(Request.Builder().url(urls[index]).get().build()).enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: okhttp3.Call, e: java.io.IOException) = attempt(index + 1)
+                override fun onResponse(call: okhttp3.Call, response: Response) {
+                    response.use {
+                        val body = it.body?.string().orEmpty()
+                        val json = runCatching { JSONObject(body) }.getOrNull()
+                        val name = json?.optString("name").orEmpty()
+                        val bridgeId = json?.optString("bridgeid").orEmpty()
+                        if (it.isSuccessful && (bridgeId.isNotBlank() || body.contains("philips hue", true))) {
+                            callback(Result(true, if (name.isBlank()) "Philips Hue Bridge" else "$name • Hue Bridge"))
+                        } else attempt(index + 1)
+                    }
+                }
+            })
+        }
+        attempt(0)
+    }
+
     fun pair(host: String, callback: (Result) -> Unit) {
         pairAttempt(host, "https") { result ->
             if (result.ok || !result.message.contains("network", true)) callback(result)

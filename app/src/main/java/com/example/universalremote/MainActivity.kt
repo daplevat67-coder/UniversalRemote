@@ -74,7 +74,7 @@ class MainActivity : AppCompatActivity() {
     private val upnp = UpnpController()
     private val pjlink = PjLinkController()
     private val roku = RokuController()
-    private val samsung = SamsungTvController()
+    private lateinit var samsung: SamsungTvController
     private val wled = WledController()
     private val cast = CastV2Controller()
     private val yeelight = YeelightController()
@@ -110,6 +110,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         supportActionBar?.hide()
         androidTv = AndroidTvController(this)
+        samsung = SamsungTvController(this)
         lgWebOs = LgWebOsController(this)
         hue = HueController(this)
         ble = BleDiscovery(this, ::addDevice) { updateSourceStatus("BLE", it) }
@@ -130,9 +131,9 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(26), dp(18), dp(14))
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c("#07111F"), c("#101B35"), c("#132842")))
         }
-        root.addView(text("UNIVERSAL REMOTE • v0.6.0", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+        root.addView(text("UNIVERSAL REMOTE • v0.7.0", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
         root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
-        root.addView(text("Реальные пульты: Android TV • Samsung • Roku • LG webOS • Cast • Hue • Yeelight • WLED", 13f, c("#AABBD4"), false))
+        root.addView(text("Пульт открывается только после проверки реального API • Android TV • Samsung • Roku • LG • Cast • Hue • Yeelight • WLED", 13f, c("#AABBD4"), false))
 
         val radar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -161,6 +162,7 @@ class MainActivity : AppCompatActivity() {
         tools.addView(smallButton("ФИЛЬТРЫ") { showFilters() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(5) })
         tools.addView(smallButton("НАСТРОЙКИ СКАНЕРА") { showSettings() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginStart = dp(5) })
         root.addView(tools)
+        root.addView(smallButton("РУЧНОЙ IP / ПРОВЕРКА УПРАВЛЕНИЯ") { showManualControl() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(8)) })
 
         search = EditText(this).apply {
             hint = "Поиск: имя, IP, MAC, порт, бренд…"
@@ -417,6 +419,8 @@ class MainActivity : AppCompatActivity() {
         layout.addView(wolButton)
         val healthButton = controlRow("🧪 Проверить стабильность службы") { runHealthProbe(currentDevice(initial.id)) }
         layout.addView(healthButton)
+        val controlTestButton = controlRow("🧭 ОПРЕДЕЛИТЬ РЕАЛЬНЫЙ ПУЛЬТ") { detectAndOpenRemote(currentDevice(initial.id)) }
+        layout.addView(controlTestButton)
 
         val d0 = currentDevice(initial.id)
         if (isRemoteCandidate(d0)) {
@@ -432,6 +436,7 @@ class MainActivity : AppCompatActivity() {
             else analyzeButton.isEnabled = false
             wolButton.isEnabled = hostOf(d0.address) != null || d0.ipAddress != null
             healthButton.isEnabled = hostOf(d0.address) != null || d0.ipAddress != null
+            controlTestButton.isEnabled = hostOf(d0.address) != null || d0.ipAddress != null
         }
         dialog.show()
     }
@@ -572,24 +577,141 @@ class MainActivity : AppCompatActivity() {
         d.openPorts.any { it.port in setOf(3000, 3001, 4352, 6466, 6467, 8001, 8002, 8009, 8060, 55443) }
 
     private fun showRemote(d: NearbyDevice) {
-        val host = d.ipAddress ?: hostOf(d.address)
-        if (host == null) return showPairingInfo(d)
+        detectAndOpenRemote(d)
+    }
+
+    /**
+     * Targeted re-analysis + protocol verification. A TCP port alone never counts as successful control.
+     * The method uses only passive/status requests until the user explicitly opens a pairing flow.
+     */
+    private fun detectAndOpenRemote(d: NearbyDevice) {
+        val host = d.ipAddress ?: hostOf(d.address) ?: return showPairingInfo(d)
+        toast("Проверяю реальные API на $host…")
+        val controlPorts = listOf(80, 443, 3000, 3001, 4352, 6466, 6467, 8001, 8002, 8008, 8009, 8060, 55443)
+        val cfg = loadScanConfig().copy(
+            ports = (controlPorts + d.openPorts.map { it.port }).distinct(),
+            connectTimeoutMs = loadScanConfig().connectTimeoutMs.coerceAtLeast(350),
+            bannerTimeoutMs = loadScanConfig().bannerTimeoutMs.coerceAtLeast(350),
+            parallelism = 16,
+            scanPorts = true
+        )
+        analyzer.analyze(d.copy(ipAddress = host), cfg) { analyzed ->
+            val enriched = enrichControlFromPorts(analyzed)
+            if (devices.containsKey(d.id)) {
+                val old = devices[d.id]
+                if (old != null) devices[d.id] = mergeDevice(old, enriched)
+                runOnUiThread { scheduleRender() }
+            }
+            autoDetectRemote(enriched, host)
+        }
+    }
+
+    private fun autoDetectRemote(d: NearbyDevice, host: String) {
         val ports = d.openPorts.map { it.port }.toSet()
         val idText = listOf(d.name, d.kind, d.brand.orEmpty(), d.protocol, d.hardwareVendor.orEmpty()).joinToString(" ").lowercase()
-        when {
-            "android tv" in idText || "google tv" in idText || 6466 in ports || 6467 in ports -> showAndroidTvRemote(d, host)
-            "roku" in idText || 8060 in ports -> showRokuRemote(d, host)
-            "samsung" in idText || "tizen" in idText -> showSamsungRemote(d, host)
-            8001 in ports || 8002 in ports -> probeAndShowSamsung(d, host)
-            "webos" in idText || ("lg" in idText && (3000 in ports || 3001 in ports)) -> showLgWebOsRemote(d, host)
-            "philips hue" in idText || "hue bridge" in idText -> showHueRemote(d, host)
-            "yeelight" in idText || 55443 in ports -> probeAndShowYeelight(d, host)
-            "google cast" in idText || "chromecast" in idText || 8009 in ports -> probeAndShowCast(d, host)
-            d.kind.contains("Проектор", true) || d.protocol.contains("PJLink", true) || 4352 in ports -> showPjLinkRemote(d, host)
-            d.descriptionUrl != null && d.protocol.contains("UPnP MediaRenderer", true) -> showUpnpRemote(d)
-            d.kind.contains("Лампа", true) || d.kind.contains("свет", true) || "wled" in idText -> probeAndShowWled(d, host)
-            else -> showPairingInfo(d)
+
+        // Pairing protocols are selected only from strong discovery evidence / their dedicated ports.
+        if ("android tv" in idText || "google tv" in idText || 6466 in ports || 6467 in ports) {
+            return runOnUiThread { showAndroidTvRemote(d, host) }
         }
+        if ("webos" in idText || ("lg" in idText && (3000 in ports || 3001 in ports))) {
+            return runOnUiThread { showLgWebOsRemote(d, host) }
+        }
+        if ("philips hue" in idText || "hue bridge" in idText) {
+            return hue.probe(host) { result -> runOnUiThread { if (result.ok) showHueRemote(d, host) else showNoControlFound(d, host, listOf(result.message)) } }
+        }
+        if (d.protocol.contains("PJLink", true) || 4352 in ports) {
+            return pjlink.probe(host) { result -> runOnUiThread { if (result.ok) showPjLinkRemote(d, host) else showNoControlFound(d, host, listOf(result.message)) } }
+        }
+        if (d.descriptionUrl != null && d.protocol.contains("UPnP MediaRenderer", true)) {
+            return runOnUiThread { showUpnpRemote(d) }
+        }
+
+        val errors = mutableListOf<String>()
+        roku.probe(host) { rokuResult, _ ->
+            if (rokuResult.ok) {
+                runOnUiThread { showRokuRemote(d, host) }
+            } else {
+                errors += "Roku: ${rokuResult.message}"
+                samsung.probe(host) { samsungResult ->
+                    if (samsungResult.ok) {
+                        runOnUiThread { showSamsungRemote(d, host) }
+                    } else {
+                        errors += "Samsung: ${samsungResult.message}"
+                        hue.probe(host) { hueResult ->
+                            if (hueResult.ok) {
+                                runOnUiThread { showHueRemote(d, host) }
+                            } else {
+                                errors += "Hue: ${hueResult.message}"
+                                wled.probe(host) { wledResult ->
+                                    if (wledResult.ok) {
+                                        runOnUiThread { showWledRemote(d, host, wledResult.message) }
+                                    } else {
+                                        errors += "WLED: ${wledResult.message}"
+                                        yeelight.probe(host) { yeelightResult ->
+                                            if (yeelightResult.ok) {
+                                                runOnUiThread { showYeelightRemote(d, host) }
+                                            } else {
+                                                errors += "Yeelight: ${yeelightResult.message}"
+                                                cast.probe(host) { castResult ->
+                                                    if (castResult.ok) {
+                                                        runOnUiThread { showCastRemote(d, host) }
+                                                    } else {
+                                                        errors += "Cast: ${castResult.message}"
+                                                        runOnUiThread { showNoControlFound(d, host, errors) }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun showNoControlFound(d: NearbyDevice, host: String, errors: List<String>) {
+        val radioOnly = d.protocol.contains("Wi-Fi", true) || d.id.startsWith("wifi:")
+        val msg = buildString {
+            append("IP: $host\n\n")
+            if (radioOnly) append("Эта запись пришла из Wi‑Fi эфира. Точка доступа может быть видна по радио, но это не означает, что телефон имеет доступ к её локальному API.\n\n")
+            append("Поддерживаемый API управления не подтвердился. Приложение не будет отправлять команды наугад.\n\n")
+            append(errors.take(6).joinToString("\n") { "• $it" })
+            append("\n\nЕсли это ваше устройство, проверьте: телефон и устройство в одной локальной сети; Guest/AP isolation выключен; на TV разрешено управление с мобильных приложений; для лампы включён LAN Control или выполнена штатная авторизация.")
+        }
+        AlertDialog.Builder(this).setTitle("Управление не подтверждено • ${d.name}").setMessage(msg).setPositiveButton("Понятно", null).show()
+    }
+
+    private fun showManualControl() {
+        val input = EditText(this).apply {
+            hint = "IPv4 устройства, например 192.168.1.25"
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_PHONE
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Проверить управление по IP")
+            .setMessage("Введите IP вашего устройства в текущей локальной сети. Сначала выполняются безопасные status/probe-запросы; команды управления отправляются только после выбора найденного штатного протокола.")
+            .setView(input)
+            .setNegativeButton("Отмена", null)
+            .setPositiveButton("Проверить") { _, _ ->
+                val host = input.text.toString().trim()
+                if (!host.matches(Regex("(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}"))) {
+                    toast("Введите корректный IPv4")
+                } else {
+                    val d = NearbyDevice(
+                        id = "manual:$host",
+                        name = "Устройство $host",
+                        kind = "Сетевое устройство",
+                        protocol = "Ручная проверка",
+                        address = host,
+                        ipAddress = host
+                    )
+                    detectAndOpenRemote(d)
+                }
+            }.show()
     }
 
     private fun showAndroidTvRemote(d: NearbyDevice, host: String) {
@@ -714,7 +836,7 @@ class MainActivity : AppCompatActivity() {
     private fun showSamsungRemote(d: NearbyDevice, host: String) {
         val scroll = ScrollView(this)
         val layout = remoteLayout(); scroll.addView(layout)
-        layout.addView(text("При первом нажатии подтвердите «Разрешить» на телевизоре. Токен Samsung хранится только в памяти до закрытия приложения.", 13f, c("#AABBD4"), false))
+        layout.addView(text(if (samsung.isPaired(host)) "✓ Samsung TV уже авторизован на этом телефоне" else "При первом нажатии подтвердите «Разрешить» на телевизоре. Выданный TV токен сохраняется локально.", 13f, if (samsung.isPaired(host)) c("#72F1CE") else c("#AABBD4"), false))
         layout.addView(sectionTitle("НАВИГАЦИЯ"))
         addDpad(layout,
             { runSamsung(d, host, "KEY_UP") }, { runSamsung(d, host, "KEY_LEFT") }, { runSamsung(d, host, "KEY_ENTER") },
@@ -741,6 +863,7 @@ class MainActivity : AppCompatActivity() {
             "Info" to { runSamsung(d, host, "KEY_INFO") }
         )
         if (d.macAddress != null) layout.addView(controlRow("⚡ Включить через Wake-on-LAN") { sendWake(d) })
+        if (samsung.isPaired(host)) layout.addView(controlRow("Забыть разрешение Samsung") { samsung.forget(host); toast("Токен Samsung удалён") })
         AlertDialog.Builder(this).setTitle("Samsung TV • ${d.name}").setView(scroll).setNegativeButton("Закрыть", null).show()
     }
 
@@ -1002,6 +1125,7 @@ class MainActivity : AppCompatActivity() {
         val extra = when {
             d?.protocol?.contains("Matter", true) == true || d?.protocol?.contains("HomeKit", true) == true -> "\n\nMatter/HomeKit требуют штатного commissioning/pairing экосистемы; универсальный контроллер для них ещё не добавлен."
             d?.brand?.contains("Tuya", true) == true || d?.protocol?.contains("Tuya", true) == true -> "\n\nTuya/Smart Life требует локальный ключ или облачную авторизацию; обход авторизации не выполняется."
+            d?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true -> "\n\nЭто объект Wi‑Fi эфира (SSID/BSSID). Видимый радиосигнал не означает, что к устройству можно отправлять LAN-команды."
             else -> ""
         }
         AlertDialog.Builder(this).setTitle("Нужна штатная авторизация")

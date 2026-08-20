@@ -13,6 +13,18 @@ class PjLinkController {
     private val executor = Executors.newCachedThreadPool()
     private val random = SecureRandom()
 
+    fun probe(host: String, callback: (Result) -> Unit) = executor.execute {
+        val result = runCatching {
+            connect(host).use { socket ->
+                val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.US_ASCII))
+                val greeting = reader.readLine().orEmpty()
+                if (!greeting.startsWith("PJLINK ")) error("Ответ не похож на PJLink")
+                Result(true, if (greeting.startsWith("PJLINK 1")) "PJLink доступен • требуется пароль" else "PJLink доступен")
+            }
+        }.getOrElse { Result(false, it.message ?: "PJLink не ответил") }
+        callback(result)
+    }
+
     fun power(host: String, on: Boolean, password: CharArray?, callback: (Result) -> Unit) =
         command(host, "%1POWR ${if (on) 1 else 0}\r", password, if (on) "Проектор включается" else "Проектор выключается", callback)
 

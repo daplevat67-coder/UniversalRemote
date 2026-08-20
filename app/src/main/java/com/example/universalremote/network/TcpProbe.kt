@@ -11,9 +11,11 @@ object TcpProbe {
         20 to "FTP-data", 21 to "FTP", 22 to "SSH", 23 to "Telnet", 25 to "SMTP",
         53 to "DNS", 80 to "HTTP", 110 to "POP3", 139 to "NetBIOS", 143 to "IMAP",
         443 to "HTTPS", 445 to "SMB", 554 to "RTSP", 631 to "IPP", 1883 to "MQTT",
-        3389 to "RDP", 4352 to "PJLink", 5000 to "HTTP/UPnP", 5001 to "HTTPS/UPnP",
-        8008 to "Google Cast HTTP", 8009 to "Google Cast", 8080 to "HTTP-alt",
-        8443 to "HTTPS-alt", 8883 to "MQTT TLS", 9100 to "JetDirect"
+        3000 to "LG webOS SSAP", 3001 to "LG webOS SSAP TLS", 3389 to "RDP", 4352 to "PJLink",
+        5000 to "HTTP/UPnP", 5001 to "HTTPS/UPnP", 6466 to "Android TV Remote", 6467 to "Android TV Pairing",
+        8001 to "Samsung Tizen Remote", 8002 to "Samsung Tizen Remote TLS", 8008 to "Google Cast HTTP",
+        8009 to "Google Cast", 8060 to "Roku ECP", 8080 to "HTTP-alt", 8443 to "HTTPS-alt",
+        8883 to "MQTT TLS", 9100 to "JetDirect", 55443 to "Yeelight LAN Control"
     )
 
     fun isOpen(host: String, port: Int, timeoutMs: Int): Boolean = runCatching {
