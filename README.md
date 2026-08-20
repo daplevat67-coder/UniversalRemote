@@ -1,3 +1,28 @@
+# Universal Remote 0.6 — more real local remotes
+
+## Новое в v0.6.0
+
+- LG webOS TV: SSAP WebSocket remote, secure port 3001 with fallback to 3000, on-screen authorization, persistent client key, D-pad/Home/Back, volume/mute, media and power-off. Power-on remains Wake-on-LAN when the TV/MAC supports it.
+- Google Cast / Chromecast: minimal local Cast v2 controller on TLS port 8009 for the currently active receiver session: volume, mute/unmute and Play/Pause/Stop. It does not inject arbitrary media URLs or bypass Cast session rules.
+- Philips Hue Bridge: physical-link-button authorization, stored application key, V2 light listing and local power/brightness/basic XY color control. HTTPS certificate fingerprint is remembered after first pairing when available.
+- Yeelight: dedicated UDP multicast discovery on 239.255.255.250:1982 plus LAN Control commands on TCP 55443 for power, brightness and RGB. Some bulbs require LAN Control to be enabled in the official Yeelight app.
+- Discovery understands LG webOS, Google Cast, Hue and Yeelight as controllable protocols instead of showing generic network-device cards.
+- LAN analyzer now includes ports 3000/3001 (LG webOS) and 55443 (Yeelight); 8009 remains Google Cast.
+- GitHub Actions moved to Node.js 24-capable actions: checkout@v5, setup-java@v5, setup-gradle@v6 and upload-artifact@v6.
+
+## Что всё ещё не реализовано
+
+- Matter/HomeKit commissioning and control;
+- Tuya/Smart Life local/cloud authorization;
+- universal Bluetooth AVRCP control of arbitrary speakers/headphones (not exposed to ordinary third-party Android apps as a general remote-controller API);
+- full Sonos/AirPlay/Spotify Connect adapters;
+- full PC mouse/keyboard/application control without a companion agent installed on the PC;
+- IR control on phones with an infrared blaster.
+
+## Безопасность v0.6
+
+Universal Remote only uses local protocols that the target device exposes. LG and Samsung require approval on the TV, Android TV requires its pairing code, Hue requires physical access to the Bridge button, PJLink uses the supplied password, and no controller bypasses device authentication.
+
 # Universal Remote 0.5 — discovery + real local remotes
 
 ## Новое в v0.5.0

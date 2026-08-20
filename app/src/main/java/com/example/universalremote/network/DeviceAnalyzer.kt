@@ -55,9 +55,11 @@ class DeviceAnalyzer {
                 9100 in numbers || 631 in numbers -> "Принтер / embedded OS (эвристика)"
                 6466 in numbers || 6467 in numbers -> "Android TV / Google TV (Remote Service v2)"
                 8060 in numbers -> "Roku OS / Roku TV (ECP)"
+                3000 in numbers || 3001 in numbers -> "Возможный LG webOS TV (SSAP)"
                 4352 in numbers -> "Проектор / embedded OS (PJLink)"
                 8001 in numbers && 8002 in numbers -> "Возможный Samsung Tizen TV (LAN remote ports)"
                 8008 in numbers || 8009 in numbers -> "Google Cast / Android-based media device (эвристика)"
+                55443 in numbers -> "Yeelight / smart light (LAN Control)"
                 22 in numbers -> "Unix/Linux-like (SSH, эвристика)"
                 else -> null
             }

@@ -36,9 +36,10 @@ class SsdpDiscovery(private val onDevice: (NearbyDevice) -> Unit) {
                         val renderer = "mediarenderer" in descriptor || "renderingcontrol" in descriptor
                         val roku = "roku" in descriptor
                         val samsung = "samsung" in descriptor || "tizen" in descriptor
+                        val webos = "webos" in descriptor || ("lg" in descriptor && "tv" in descriptor)
                         val kind = classify(descriptor)
                         val capabilities = when {
-                            roku || samsung -> setOf(
+                            roku || samsung || webos -> setOf(
                                 ControlCapability.POWER, ControlCapability.VOLUME, ControlCapability.MUTE,
                                 ControlCapability.MEDIA, ControlCapability.NAVIGATION, ControlCapability.CHANNEL, ControlCapability.INPUT
                             )
@@ -48,6 +49,7 @@ class SsdpDiscovery(private val onDevice: (NearbyDevice) -> Unit) {
                         val protocol = when {
                             roku -> "Roku ECP"
                             samsung -> "Samsung Tizen WebSocket"
+                            webos -> "LG webOS SSAP"
                             renderer -> "UPnP MediaRenderer"
                             else -> "SSDP/UPnP"
                         }
@@ -60,8 +62,8 @@ class SsdpDiscovery(private val onDevice: (NearbyDevice) -> Unit) {
                                 kind = kind,
                                 protocol = protocol,
                                 address = address,
-                                controllable = roku || samsung || renderer,
-                                brand = when { roku -> "Roku"; samsung -> "Samsung"; else -> null },
+                                controllable = roku || samsung || webos || renderer,
+                                brand = when { roku -> "Roku"; samsung -> "Samsung"; webos -> "LG"; else -> null },
                                 capabilities = capabilities,
                                 descriptionUrl = location,
                                 ipAddress = host.takeIf { it.isNotBlank() }

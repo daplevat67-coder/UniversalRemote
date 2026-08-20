@@ -29,10 +29,14 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.example.universalremote.control.AndroidTvController
+import com.example.universalremote.control.CastV2Controller
+import com.example.universalremote.control.HueController
+import com.example.universalremote.control.LgWebOsController
 import com.example.universalremote.control.PjLinkController
 import com.example.universalremote.control.RokuController
 import com.example.universalremote.control.SamsungTvController
 import com.example.universalremote.control.WledController
+import com.example.universalremote.control.YeelightController
 import com.example.universalremote.control.UpnpController
 import com.example.universalremote.control.WakeOnLanController
 import com.example.universalremote.discovery.BleDiscovery
@@ -42,6 +46,7 @@ import com.example.universalremote.discovery.NsdDiscovery
 import com.example.universalremote.discovery.PjLinkDiscovery
 import com.example.universalremote.discovery.SsdpDiscovery
 import com.example.universalremote.discovery.WifiDiscovery
+import com.example.universalremote.discovery.YeelightDiscovery
 import com.example.universalremote.model.ControlCapability
 import com.example.universalremote.model.NearbyDevice
 import com.example.universalremote.model.ScanConfig
@@ -65,11 +70,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var lan: LanDiscovery
     private lateinit var pjDiscovery: PjLinkDiscovery
     private lateinit var wifiDiscovery: WifiDiscovery
+    private lateinit var yeelightDiscovery: YeelightDiscovery
     private val upnp = UpnpController()
     private val pjlink = PjLinkController()
     private val roku = RokuController()
     private val samsung = SamsungTvController()
     private val wled = WledController()
+    private val cast = CastV2Controller()
+    private val yeelight = YeelightController()
+    private lateinit var lgWebOs: LgWebOsController
+    private lateinit var hue: HueController
     private lateinit var androidTv: AndroidTvController
     private val analyzer = DeviceAnalyzer()
     private val wol = WakeOnLanController()
@@ -100,6 +110,8 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         supportActionBar?.hide()
         androidTv = AndroidTvController(this)
+        lgWebOs = LgWebOsController(this)
+        hue = HueController(this)
         ble = BleDiscovery(this, ::addDevice) { updateSourceStatus("BLE", it) }
         classic = BluetoothClassicDiscovery(this, ::addDevice) { updateSourceStatus("BT", it) }
         nsd = NsdDiscovery(this, ::addDevice)
@@ -107,6 +119,7 @@ class MainActivity : AppCompatActivity() {
         lan = LanDiscovery(this, ::addDevice) { status -> updateSourceStatus("LAN", status) }
         pjDiscovery = PjLinkDiscovery(this, ::addDevice)
         wifiDiscovery = WifiDiscovery(this, ::addDevice) { updateSourceStatus("Wi‑Fi", it) }
+        yeelightDiscovery = YeelightDiscovery(::addDevice)
         adapter = DeviceAdapter(::showDevice)
         setContentView(buildScreen())
     }
@@ -117,9 +130,9 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(26), dp(18), dp(14))
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c("#07111F"), c("#101B35"), c("#132842")))
         }
-        root.addView(text("UNIVERSAL REMOTE • v0.5.0", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+        root.addView(text("UNIVERSAL REMOTE • v0.6.0", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
         root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
-        root.addView(text("Поиск + реальные пульты: Android TV • Samsung • Roku • UPnP • PJLink • WLED", 13f, c("#AABBD4"), false))
+        root.addView(text("Реальные пульты: Android TV • Samsung • Roku • LG webOS • Cast • Hue • Yeelight • WLED", 13f, c("#AABBD4"), false))
 
         val radar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -206,6 +219,7 @@ class MainActivity : AppCompatActivity() {
         if (prefs.getBoolean("ssdp", true)) runCatching { ssdp.start() }
         if (prefs.getBoolean("lan", true)) runCatching { lan.start(loadScanConfig()) }
         if (prefs.getBoolean("pjlink", true)) runCatching { pjDiscovery.start() }
+        if (prefs.getBoolean("yeelight", true)) runCatching { yeelightDiscovery.start() }.onFailure { updateSourceStatus("Yeelight", it.javaClass.simpleName) }
         val duration = prefs.getInt("scan_duration", 35).coerceIn(10, 120)
         handler.postDelayed(finishScan, duration * 1000L)
     }
@@ -223,6 +237,7 @@ class MainActivity : AppCompatActivity() {
         runCatching { ssdp.stop() }
         runCatching { lan.stop() }
         runCatching { pjDiscovery.stop() }
+        runCatching { yeelightDiscovery.stop() }
         releaseMulticast()
     }
 
@@ -333,7 +348,8 @@ class MainActivity : AppCompatActivity() {
             "mdns" to "mDNS / Bonjour",
             "ssdp" to "SSDP / UPnP",
             "lan" to "LAN IPv4 + TCP",
-            "pjlink" to "PJLink-проекторы"
+            "pjlink" to "PJLink-проекторы",
+            "yeelight" to "Yeelight LAN discovery"
         )
         val sourceChecks = sources.mapValues { (key, label) -> CheckBox(this).apply { text = label; isChecked = prefs.getBoolean(key, true); box.addView(this) } }
         val portScan = CheckBox(this).apply { text = "Сканировать TCP-порты найденных хостов"; isChecked = prefs.getBoolean("scan_ports", true); box.addView(this) }
@@ -514,6 +530,29 @@ class MainActivity : AppCompatActivity() {
                     ControlCapability.MEDIA, ControlCapability.NAVIGATION, ControlCapability.CHANNEL, ControlCapability.INPUT
                 )
             )
+            3000 in ports || 3001 in ports -> d.copy(
+                kind = if (d.kind.contains("Телевизор") || d.kind.contains("ТВ")) d.kind else "Телевизор / LG webOS (кандидат)",
+                protocol = "LG webOS SSAP (кандидат, проверяется при подключении)",
+                controllable = true,
+                capabilities = d.capabilities + setOf(
+                    ControlCapability.POWER, ControlCapability.VOLUME, ControlCapability.MUTE,
+                    ControlCapability.MEDIA, ControlCapability.NAVIGATION, ControlCapability.INPUT
+                )
+            )
+            8009 in ports -> d.copy(
+                kind = if (d.kind.contains("ТВ") || d.kind.contains("медиаплеер", true)) d.kind else "ТВ / медиаплеер",
+                protocol = "Google Cast v2 (кандидат, проверяется перед командой)",
+                brand = d.brand ?: "Google Cast",
+                controllable = true,
+                capabilities = d.capabilities + setOf(ControlCapability.VOLUME, ControlCapability.MUTE, ControlCapability.MEDIA)
+            )
+            55443 in ports -> d.copy(
+                kind = "Лампа / свет",
+                protocol = "Yeelight LAN Control (кандидат)",
+                brand = d.brand ?: "Yeelight",
+                controllable = true,
+                capabilities = d.capabilities + setOf(ControlCapability.LIGHT_POWER, ControlCapability.BRIGHTNESS, ControlCapability.COLOR)
+            )
             4352 in ports -> d.copy(
                 kind = "Проектор",
                 protocol = "PJLink",
@@ -528,8 +567,9 @@ class MainActivity : AppCompatActivity() {
         d.kind.contains("Телевизор", true) || d.kind.contains("ТВ", true) ||
         d.kind.contains("Проектор", true) || d.kind.contains("Лампа", true) || d.kind.contains("свет", true) ||
         d.protocol.contains("Roku", true) || d.protocol.contains("Android TV", true) || d.protocol.contains("Samsung", true) ||
-        d.protocol.contains("UPnP MediaRenderer", true) || d.protocol.contains("PJLink", true) ||
-        d.openPorts.any { it.port in setOf(4352, 6466, 6467, 8001, 8002, 8060) }
+        d.protocol.contains("LG webOS", true) || d.protocol.contains("Google Cast", true) || d.protocol.contains("Hue", true) ||
+        d.protocol.contains("Yeelight", true) || d.protocol.contains("UPnP MediaRenderer", true) || d.protocol.contains("PJLink", true) ||
+        d.openPorts.any { it.port in setOf(3000, 3001, 4352, 6466, 6467, 8001, 8002, 8009, 8060, 55443) }
 
     private fun showRemote(d: NearbyDevice) {
         val host = d.ipAddress ?: hostOf(d.address)
@@ -541,6 +581,10 @@ class MainActivity : AppCompatActivity() {
             "roku" in idText || 8060 in ports -> showRokuRemote(d, host)
             "samsung" in idText || "tizen" in idText -> showSamsungRemote(d, host)
             8001 in ports || 8002 in ports -> probeAndShowSamsung(d, host)
+            "webos" in idText || ("lg" in idText && (3000 in ports || 3001 in ports)) -> showLgWebOsRemote(d, host)
+            "philips hue" in idText || "hue bridge" in idText -> showHueRemote(d, host)
+            "yeelight" in idText || 55443 in ports -> probeAndShowYeelight(d, host)
+            "google cast" in idText || "chromecast" in idText || 8009 in ports -> probeAndShowCast(d, host)
             d.kind.contains("Проектор", true) || d.protocol.contains("PJLink", true) || 4352 in ports -> showPjLinkRemote(d, host)
             d.descriptionUrl != null && d.protocol.contains("UPnP MediaRenderer", true) -> showUpnpRemote(d)
             d.kind.contains("Лампа", true) || d.kind.contains("свет", true) || "wled" in idText -> probeAndShowWled(d, host)
@@ -704,6 +748,183 @@ class MainActivity : AppCompatActivity() {
         samsung.key(host, key) { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
     }
 
+    private fun showLgWebOsRemote(d: NearbyDevice, host: String) {
+        val scroll = ScrollView(this)
+        val layout = remoteLayout(); scroll.addView(layout)
+        val status = text(
+            if (lgWebOs.isPaired(host)) "✓ LG webOS уже сопряжён" else "При первом подключении подтвердите Universal Remote на экране LG TV.",
+            13f, if (lgWebOs.isPaired(host)) c("#72F1CE") else c("#AABBD4"), false
+        )
+        layout.addView(status)
+        layout.addView(controlRow("🔐 Проверить / сопрячь TV") {
+            lgWebOs.probe(host) { result -> runOnUiThread {
+                status.text = result.message
+                toast(result.message)
+                if (result.ok) markVerified(d.id)
+            } }
+        })
+        layout.addView(sectionTitle("НАВИГАЦИЯ"))
+        addDpad(layout,
+            { runLg(d) { cb -> lgWebOs.button(host, "UP", cb) } },
+            { runLg(d) { cb -> lgWebOs.button(host, "LEFT", cb) } },
+            { runLg(d) { cb -> lgWebOs.button(host, "ENTER", cb) } },
+            { runLg(d) { cb -> lgWebOs.button(host, "RIGHT", cb) } },
+            { runLg(d) { cb -> lgWebOs.button(host, "DOWN", cb) } }
+        )
+        addRemoteRow(layout,
+            "⌂ Home" to { runLg(d) { cb -> lgWebOs.button(host, "HOME", cb) } },
+            "↩ Back" to { runLg(d) { cb -> lgWebOs.button(host, "BACK", cb) } },
+            "⏻ Off" to { runLg(d) { cb -> lgWebOs.powerOff(host, cb) } }
+        )
+        addRemoteRow(layout,
+            "Vol −" to { runLg(d) { cb -> lgWebOs.volumeDown(host, cb) } },
+            "Mute" to { runLg(d) { cb -> lgWebOs.mute(host, true, cb) } },
+            "Vol +" to { runLg(d) { cb -> lgWebOs.volumeUp(host, cb) } }
+        )
+        addRemoteRow(layout,
+            "⏪" to { runLg(d) { cb -> lgWebOs.rewind(host, cb) } },
+            "▶" to { runLg(d) { cb -> lgWebOs.play(host, cb) } },
+            "Ⅱ" to { runLg(d) { cb -> lgWebOs.pause(host, cb) } },
+            "■" to { runLg(d) { cb -> lgWebOs.stop(host, cb) } },
+            "⏩" to { runLg(d) { cb -> lgWebOs.fastForward(host, cb) } }
+        )
+        if (d.macAddress != null) layout.addView(controlRow("⚡ Включить TV через Wake-on-LAN") { sendWake(d) })
+        layout.addView(controlRow("Забыть сопряжение LG TV") {
+            lgWebOs.forget(host); status.text = "Ключ LG удалён. Следующее подключение снова попросит подтверждение на TV."
+        })
+        AlertDialog.Builder(this).setTitle("LG webOS • ${d.name}").setView(scroll).setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun runLg(d: NearbyDevice, action: (((LgWebOsController.Result) -> Unit)) -> Unit) {
+        action { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
+    }
+
+    private fun probeAndShowCast(d: NearbyDevice, host: String) {
+        toast("Проверяю Google Cast v2…")
+        cast.probe(host) { result -> runOnUiThread {
+            if (!result.ok) return@runOnUiThread toast(result.message)
+            showCastRemote(d, host)
+        } }
+    }
+
+    private fun showCastRemote(d: NearbyDevice, host: String) {
+        val layout = remoteLayout()
+        layout.addView(text("Управление активным Cast-сеансом. Приложение не запускает произвольный медиапоток без Cast session.", 13f, c("#AABBD4"), false))
+        layout.addView(sectionTitle("ГРОМКОСТЬ"))
+        addRemoteRow(layout,
+            "−5%" to { runCast(d) { cb -> cast.adjustVolume(host, -0.05, cb) } },
+            "Mute" to { runCast(d) { cb -> cast.mute(host, true, cb) } },
+            "Unmute" to { runCast(d) { cb -> cast.mute(host, false, cb) } },
+            "+5%" to { runCast(d) { cb -> cast.adjustVolume(host, 0.05, cb) } }
+        )
+        layout.addView(sectionTitle("МЕДИА"))
+        addRemoteRow(layout,
+            "▶ Play" to { runCast(d) { cb -> cast.media(host, "PLAY", cb) } },
+            "Ⅱ Pause" to { runCast(d) { cb -> cast.media(host, "PAUSE", cb) } },
+            "■ Stop" to { runCast(d) { cb -> cast.media(host, "STOP", cb) } }
+        )
+        AlertDialog.Builder(this).setTitle("Google Cast • ${d.name}").setView(layout).setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun runCast(d: NearbyDevice, action: (((CastV2Controller.Result) -> Unit)) -> Unit) {
+        action { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
+    }
+
+    private fun showHueRemote(d: NearbyDevice, host: String) {
+        val layout = remoteLayout()
+        val status = text(
+            if (hue.isPaired(host)) "✓ Hue Bridge авторизован" else "Нажмите физическую кнопку на Hue Bridge, затем кнопку авторизации ниже.",
+            13f, if (hue.isPaired(host)) c("#72F1CE") else c("#AABBD4"), false
+        )
+        layout.addView(status)
+        layout.addView(controlRow("🔗 Я нажал кнопку Bridge — авторизовать") {
+            status.text = "Авторизация Hue…"
+            hue.pair(host) { result -> runOnUiThread {
+                status.text = result.message
+                toast(result.message)
+                if (result.ok) markVerified(d.id)
+            } }
+        })
+        layout.addView(controlRow("💡 Показать лампы этого Bridge") { openHueLightList(d, host) })
+        if (hue.isPaired(host)) layout.addView(controlRow("Забыть Hue Bridge") {
+            hue.forget(host); status.text = "Авторизация Hue удалена"
+        })
+        AlertDialog.Builder(this).setTitle("Philips Hue • ${d.name}").setView(layout).setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun openHueLightList(d: NearbyDevice, host: String) {
+        toast("Загружаю лампы Hue…")
+        hue.listLights(host) { result, lights -> runOnUiThread {
+            if (!result.ok) return@runOnUiThread toast(result.message)
+            if (lights.isEmpty()) return@runOnUiThread toast("Hue: лампы не найдены")
+            val names = lights.map { it.name }.toTypedArray()
+            AlertDialog.Builder(this).setTitle("Лампы Hue")
+                .setItems(names) { _, which -> showHueLightRemote(d, host, lights[which]) }
+                .setNegativeButton("Закрыть", null).show()
+        } }
+    }
+
+    private fun showHueLightRemote(d: NearbyDevice, host: String, light: HueController.Light) {
+        val layout = remoteLayout()
+        addRemoteRow(layout,
+            "ВКЛ" to { runHue(d) { cb -> hue.power(host, light.id, true, cb) } },
+            "ВЫКЛ" to { runHue(d) { cb -> hue.power(host, light.id, false, cb) } }
+        )
+        layout.addView(sectionTitle("ЯРКОСТЬ"))
+        addRemoteRow(layout,
+            "25%" to { runHue(d) { cb -> hue.brightness(host, light.id, 25, cb) } },
+            "50%" to { runHue(d) { cb -> hue.brightness(host, light.id, 50, cb) } },
+            "100%" to { runHue(d) { cb -> hue.brightness(host, light.id, 100, cb) } }
+        )
+        layout.addView(sectionTitle("ЦВЕТ"))
+        addRemoteRow(layout,
+            "Красный" to { runHue(d) { cb -> hue.color(host, light.id, 0.7006, 0.2993, cb) } },
+            "Зелёный" to { runHue(d) { cb -> hue.color(host, light.id, 0.1724, 0.7468, cb) } },
+            "Синий" to { runHue(d) { cb -> hue.color(host, light.id, 0.1355, 0.0399, cb) } },
+            "Белый" to { runHue(d) { cb -> hue.color(host, light.id, 0.3227, 0.3290, cb) } }
+        )
+        AlertDialog.Builder(this).setTitle("Hue • ${light.name}").setView(layout).setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun runHue(d: NearbyDevice, action: (((HueController.Result) -> Unit)) -> Unit) {
+        action { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
+    }
+
+    private fun probeAndShowYeelight(d: NearbyDevice, host: String) {
+        toast("Проверяю Yeelight LAN Control…")
+        yeelight.probe(host) { result -> runOnUiThread {
+            if (!result.ok) return@runOnUiThread toast(result.message)
+            showYeelightRemote(d, host)
+        } }
+    }
+
+    private fun showYeelightRemote(d: NearbyDevice, host: String) {
+        val layout = remoteLayout()
+        layout.addView(text("Для некоторых моделей нужно один раз включить LAN Control в официальном приложении Yeelight.", 13f, c("#AABBD4"), false))
+        addRemoteRow(layout,
+            "ВКЛ" to { runYeelight(d) { cb -> yeelight.power(host, true, cb) } },
+            "ВЫКЛ" to { runYeelight(d) { cb -> yeelight.power(host, false, cb) } }
+        )
+        layout.addView(sectionTitle("ЯРКОСТЬ"))
+        addRemoteRow(layout,
+            "25%" to { runYeelight(d) { cb -> yeelight.brightness(host, 25, cb) } },
+            "50%" to { runYeelight(d) { cb -> yeelight.brightness(host, 50, cb) } },
+            "100%" to { runYeelight(d) { cb -> yeelight.brightness(host, 100, cb) } }
+        )
+        layout.addView(sectionTitle("ЦВЕТ"))
+        addRemoteRow(layout,
+            "Красный" to { runYeelight(d) { cb -> yeelight.color(host, 255, 0, 0, cb) } },
+            "Зелёный" to { runYeelight(d) { cb -> yeelight.color(host, 0, 255, 0, cb) } },
+            "Синий" to { runYeelight(d) { cb -> yeelight.color(host, 0, 0, 255, cb) } },
+            "Белый" to { runYeelight(d) { cb -> yeelight.color(host, 255, 255, 255, cb) } }
+        )
+        AlertDialog.Builder(this).setTitle("Yeelight • ${d.name}").setView(layout).setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun runYeelight(d: NearbyDevice, action: (((YeelightController.Result) -> Unit)) -> Unit) {
+        action { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
+    }
+
     private fun probeAndShowWled(d: NearbyDevice, host: String) {
         toast("Проверяю WLED API…")
         wled.probe(host) { result -> runOnUiThread {
@@ -779,8 +1000,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun showPairingInfo(d: NearbyDevice? = null) {
         val extra = when {
-            d?.brand?.contains("Philips Hue", true) == true || d?.protocol?.contains("hue", true) == true -> "\n\nPhilips Hue требует физического нажатия кнопки Bridge и HTTPS application-key. Этот адаптер пока не выдаёт фальшивые команды без такой авторизации."
-            d?.protocol?.contains("Matter", true) == true || d?.protocol?.contains("HomeKit", true) == true -> "\n\nMatter/HomeKit требуют штатного commissioning/pairing экосистемы."
+            d?.protocol?.contains("Matter", true) == true || d?.protocol?.contains("HomeKit", true) == true -> "\n\nMatter/HomeKit требуют штатного commissioning/pairing экосистемы; универсальный контроллер для них ещё не добавлен."
+            d?.brand?.contains("Tuya", true) == true || d?.protocol?.contains("Tuya", true) == true -> "\n\nTuya/Smart Life требует локальный ключ или облачную авторизацию; обход авторизации не выполняется."
             else -> ""
         }
         AlertDialog.Builder(this).setTitle("Нужна штатная авторизация")
@@ -899,7 +1120,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        stopScan(); upnp.close(); pjlink.close(); roku.close(); samsung.close(); wled.close(); androidTv.close(); analyzer.close(); wol.close(); healthProbe.close()
+        stopScan(); upnp.close(); pjlink.close(); roku.close(); samsung.close(); wled.close(); cast.close(); yeelight.close(); lgWebOs.close(); hue.close(); androidTv.close(); analyzer.close(); wol.close(); healthProbe.close()
         super.onDestroy()
     }
 }
