@@ -135,7 +135,7 @@ class MainActivity : AppCompatActivity() {
             setHintTextColor(c("#7185A3"))
             setTextColor(Color.WHITE)
             textSize = 14f
-            singleLine = true
+            setSingleLine(true)
             setPadding(dp(15), 0, dp(15), 0)
             background = rounded(c("#101F36"), 14, c("#294466"))
             addTextChangedListener(object : TextWatcher {
@@ -330,7 +330,7 @@ class MainActivity : AppCompatActivity() {
     private fun settingField(box: LinearLayout, label: String, value: String, hintValue: String): EditText {
         box.addView(text(label, 12f, c("#AABBD4"), true).apply { setPadding(0, dp(8), 0, dp(3)) })
         return EditText(this).apply {
-            setText(value); hint = hintValue; setTextColor(Color.WHITE); setHintTextColor(c("#7185A3")); singleLine = true
+            setText(value); hint = hintValue; setTextColor(Color.WHITE); setHintTextColor(c("#7185A3")); setSingleLine(true)
             background = rounded(c("#101F36"), 10, c("#294466")); setPadding(dp(12), 0, dp(12), 0)
             box.addView(this, LinearLayout.LayoutParams(-1, dp(46)).apply { bottomMargin = dp(4) })
         }
@@ -444,7 +444,7 @@ class MainActivity : AppCompatActivity() {
             wol.wake(mac) { _, message -> runOnUiThread { toast(message) } }
             return
         }
-        val field = EditText(this).apply { hint = "AA:BB:CC:DD:EE:FF"; singleLine = true }
+        val field = EditText(this).apply { hint = "AA:BB:CC:DD:EE:FF"; setSingleLine(true) }
         AlertDialog.Builder(this).setTitle("Wake-on-LAN").setMessage("MAC не удалось получить автоматически. Введите MAC сетевой карты устройства.")
             .setView(field).setNegativeButton("Отмена", null).setPositiveButton("Отправить") { _, _ ->
                 wol.wake(field.text.toString()) { _, message -> runOnUiThread { toast(message) } }
