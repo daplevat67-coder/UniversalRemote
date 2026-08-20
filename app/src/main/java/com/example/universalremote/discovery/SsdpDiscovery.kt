@@ -2,6 +2,7 @@ package com.example.universalremote.discovery
 
 import com.example.universalremote.model.ControlCapability
 import com.example.universalremote.model.NearbyDevice
+import com.example.universalremote.network.LocalEndpointPolicy
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -30,9 +31,11 @@ class SsdpDiscovery(private val onDevice: (NearbyDevice) -> Unit) {
                         val server = header(text, "SERVER") ?: "UPnP-устройство"
                         val st = header(text, "ST").orEmpty()
                         val usn = header(text, "USN").orEmpty()
-                        val location = header(text, "LOCATION")
-                        val address = location ?: packet.address.hostAddress.orEmpty()
-                        val descriptor = "$server $st $usn $location".lowercase()
+                        val packetHost = packet.address.hostAddress.orEmpty()
+                        val rawLocation = header(text, "LOCATION")
+                        val location = rawLocation?.takeIf { packetHost.isNotBlank() && LocalEndpointPolicy.samePrivateHost(packetHost, it, setOf("http", "https")) }
+                        val address = location ?: packetHost
+                        val descriptor = "$server $st $usn".lowercase()
                         val renderer = "mediarenderer" in descriptor || "renderingcontrol" in descriptor
                         val roku = "roku" in descriptor
                         val samsung = "samsung" in descriptor || "tizen" in descriptor
@@ -54,7 +57,7 @@ class SsdpDiscovery(private val onDevice: (NearbyDevice) -> Unit) {
                             else -> "SSDP/UPnP"
                         }
                         val identity = usn.substringBefore("::").ifBlank { address }
-                        val host = packet.address.hostAddress.orEmpty()
+                        val host = packetHost
                         onDevice(
                             NearbyDevice(
                                 id = "ssdp:$identity",
@@ -62,7 +65,7 @@ class SsdpDiscovery(private val onDevice: (NearbyDevice) -> Unit) {
                                 kind = kind,
                                 protocol = protocol,
                                 address = address,
-                                controllable = roku || samsung || webos || renderer,
+                                controllable = roku || samsung || webos || (renderer && location != null),
                                 brand = when { roku -> "Roku"; samsung -> "Samsung"; webos -> "LG"; else -> null },
                                 capabilities = capabilities,
                                 descriptionUrl = location,

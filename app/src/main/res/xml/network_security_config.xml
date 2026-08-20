@@ -1,1 +1,5 @@
-<network-security-config><base-config cleartextTrafficPermitted="true" /></network-security-config>
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Roku ECP, WLED and some UPnP devices are HTTP-only. Code restricts these calls to private same-host LAN endpoints and disables redirects. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

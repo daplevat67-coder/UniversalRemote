@@ -1,5 +1,6 @@
 package com.example.universalremote.control
 
+import com.example.universalremote.network.LocalEndpointPolicy
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.InetSocketAddress
@@ -10,7 +11,7 @@ import java.util.concurrent.Executors
 
 class PjLinkController {
     data class Result(val ok: Boolean, val message: String)
-    private val executor = Executors.newCachedThreadPool()
+    private val executor = Executors.newFixedThreadPool(3)
     private val random = SecureRandom()
 
     fun probe(host: String, callback: (Result) -> Unit) = executor.execute {
@@ -54,6 +55,7 @@ class PjLinkController {
     }
 
     private fun execute(host: String, command: String, password: CharArray?): String {
+        require(LocalEndpointPolicy.isPrivateIpv4(host)) { "PJLink: разрешены только private LAN IPv4" }
         val socket = connect(host)
         socket.use {
             val reader = BufferedReader(InputStreamReader(it.getInputStream(), Charsets.US_ASCII))
@@ -72,7 +74,7 @@ class PjLinkController {
                         val controllerRandom = ByteArray(16).also(random::nextBytes)
                         val xor = ByteArray(16) { i -> (projectorRandom[i].toInt() xor controllerRandom[i].toInt()).toByte() }
                         val xorHex = xor.toHex()
-                        val hashHex = sha256(xorHex + supplied.concatToString())
+                        val hashHex = digestWithPassword("SHA-256", xorHex, supplied)
                         val payload = controllerRandom.toHex() + hashHex + command
                         return sendAndRead(it, reader, payload)
                     }
@@ -93,7 +95,7 @@ class PjLinkController {
                 greeting.startsWith("PJLINK 1 ") -> {
                     val challenge = greeting.substringAfter("PJLINK 1 ").trim()
                     val supplied = password ?: error("Проектор требует пароль PJLink")
-                    val prefix = md5(challenge + supplied.concatToString())
+                    val prefix = digestWithPassword("MD5", challenge, supplied)
                     sendAndRead(socket, reader, prefix + command)
                 }
                 else -> error("PJLink не отвечает")
@@ -101,9 +103,12 @@ class PjLinkController {
         }
     }
 
-    private fun connect(host: String): Socket = Socket().apply {
+    private fun connect(host: String): Socket {
+        require(LocalEndpointPolicy.isPrivateIpv4(host)) { "PJLink: разрешены только private LAN IPv4" }
+        return Socket().apply {
         connect(InetSocketAddress(host, 4352), 1800)
         soTimeout = 2300
+        }
     }
 
     private fun sendAndRead(socket: Socket, reader: BufferedReader, payload: String): String {
@@ -112,11 +117,17 @@ class PjLinkController {
         return reader.readLine().orEmpty()
     }
 
-    private fun md5(value: String): String = MessageDigest.getInstance("MD5")
-        .digest(value.toByteArray(Charsets.US_ASCII)).toHex()
-
-    private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
-        .digest(value.toByteArray(Charsets.US_ASCII)).toHex()
+    private fun digestWithPassword(algorithm: String, prefix: String, password: CharArray): String {
+        val digest = MessageDigest.getInstance(algorithm)
+        digest.update(prefix.toByteArray(Charsets.US_ASCII))
+        val passBytes = ByteArray(password.size) { i -> password[i].code.toByte() }
+        try {
+            digest.update(passBytes)
+            return digest.digest().toHex()
+        } finally {
+            passBytes.fill(0)
+        }
+    }
 
     private fun hexToBytes(value: String): ByteArray {
         require(value.length % 2 == 0) { "Некорректный PJLink challenge" }

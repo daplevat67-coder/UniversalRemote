@@ -9,7 +9,7 @@ import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 
 class DeviceAnalyzer {
-    private val executor = Executors.newCachedThreadPool()
+    private val executor = Executors.newFixedThreadPool(3)
 
     fun analyze(device: NearbyDevice, config: ScanConfig, callback: (NearbyDevice) -> Unit) {
         val host = device.ipAddress ?: hostFrom(device.address) ?: return callback(device.copy(analysisNote = "IPv4-адрес не определён"))
@@ -69,10 +69,10 @@ class DeviceAnalyzer {
         fun securityFindings(ports: List<PortService>): List<String> {
             val p = ports.map { it.port }.toSet()
             val findings = mutableListOf<String>()
-            if (23 in p) findings += "Telnet открыт: незашифрованная удалённая консоль"
-            if (21 in p) findings += "FTP открыт: учётные данные/данные могут передаваться без TLS"
-            if (80 in p && 443 !in p && 8443 !in p && 5001 !in p) findings += "HTTP открыт без обнаруженного HTTPS в выбранном наборе портов"
-            if (1883 in p && 8883 !in p) findings += "MQTT 1883 открыт без обнаруженного MQTT TLS 8883"
+            if (23 in p) findings += "Telnet доступен: если служба используется, проверьте необходимость и отсутствие чувствительных данных"
+            if (21 in p) findings += "FTP доступен: проверьте, используется ли TLS или сеть полностью доверенная"
+            if (80 in p && 443 !in p && 8443 !in p && 5001 !in p) findings += "HTTP доступен; HTTPS не найден в выбранном наборе портов (это наблюдение, не доказательство уязвимости)"
+            if (1883 in p && 8883 !in p) findings += "MQTT 1883 доступен; MQTT TLS 8883 не найден в выбранном наборе портов"
             if (445 in p) findings += "SMB доступен в локальной сети — проверьте необходимость общего доступа"
             if (3389 in p) findings += "RDP доступен в локальной сети — проверьте NLA и правила доступа"
             return findings

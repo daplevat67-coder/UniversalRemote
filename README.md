@@ -1,3 +1,28 @@
+# Universal Remote 0.7.1 — discovery + security hardening
+
+## Исправлено в v0.7.1
+
+- LAN discovery больше не отбрасывает устройство до проверки управляющих endpoints. Быстрый список включает Android TV 6466/6467, Roku 8060, Samsung 8001/8002, LG webOS 3000/3001, Google Cast 8009, Yeelight 55443 и PJLink 4352.
+- Общий LAN-поиск разделён на две фазы: UDP neighbor sweep + один снимок neighbor table, затем быстрые характерные TCP-порты. Полный 64-port анализ выполняется только для выбранного устройства.
+- Убраны сотни/тысячи запусков `ip neigh` и отдельные UDP sockets на каждый IP. Для больших подсетей отображается полный CIDR, а активное окно проб ограничивается явно, без притворного изменения маски сети.
+- mDNS resolve выполняется через очередь, чтобы не запускать множество `resolveService()` одновременно. Добавлены объявления Android ADB TLS и Apple Companion Link как признаки телефонов/планшетов.
+- Статус управления разделён в UI на **кандидат** и **API подтверждён**. Открытый порт сам по себе больше не обещает, что команда сработает.
+- Ручной IP разрешён только для private IPv4 текущей Wi‑Fi подсети.
+- SSDP `LOCATION`, UPnP `controlURL` и LG `socketPath` не могут увести запрос на другой/публичный хост; HTTP redirects отключены.
+- Samsung/LG/Hue credentials шифруются AES-GCM ключом Android Keystore. Backup/Device Transfer для SharedPreferences отключены. Старые v0.7.0 tokens/client-key/application-key без TLS binding не переиспользуются: потребуется одно штатное повторное pairing/approval.
+- Samsung token больше не отправляется через `ws://8001`; LG client-key не откатывается на `ws://3000`; Hue application key не используется по HTTP. Для self-signed LAN TLS применяется TOFU fingerprint после успешного штатного protocol/pairing.
+- Cast также использует TOFU fingerprint; Android TV remote socket получил read timeout, pairing session автоматически закрывается через 90 секунд.
+- HTTP/XML/JSON ответы ограничены по размеру, XML parser настроен fail-closed против DTD/external entities, thread pools ограничены.
+- Yeelight теперь использует порт, рекламируемый discovery, а не всегда жёстко `55443`. PJLink password больше не конвертируется в долгоживущий `String` перед вычислением digest.
+
+## Что v0.7.1 всё ещё не может гарантировать
+
+Обычное Android-приложение не получает универсальный список клиентов точки доступа. Телефон без открытых портов/mDNS/BLE может быть обнаружен через ARP/neighbor sweep, но это зависит от прошивки Android, сна устройства и AP/client isolation. Для действительно полного списка клиентов нужен штатно авторизованный адаптер к конкретному роутеру либо companion-служба на клиентах.
+
+Некоторые legacy Roku/WLED/UPnP устройства работают только по local HTTP. Поэтому platform-level cleartext пока остаётся разрешён для приложения, но контроллеры v0.7.1 ограничивают такие URL private same-host LAN адресами и запрещают redirects. Полное отключение `usesCleartextTraffic` потребует отдельной транспортной реализации для legacy HTTP протоколов.
+
+---
+
 # Universal Remote 0.7 — control reliability + real API verification
 
 ## Новое в v0.7.0

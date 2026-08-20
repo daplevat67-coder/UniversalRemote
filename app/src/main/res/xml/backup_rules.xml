@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Pairing state/tokens must never leave this install through legacy Auto Backup. -->
+    <exclude domain="sharedpref" path="." />
+</full-backup-content>

@@ -1,31 +1,37 @@
 package com.example.universalremote.control
 
+import com.example.universalremote.network.BoundedIo
+import com.example.universalremote.network.LocalEndpointPolicy
+import com.example.universalremote.network.XmlSecurity
+import java.io.ByteArrayInputStream
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
-import javax.xml.parsers.DocumentBuilderFactory
 
 class UpnpController {
     data class Result(val ok: Boolean, val message: String)
-    private data class Service(val type: String, val controlUrl: String)
+    private data class Service(val type: String, val controlUrl: String, val host: String)
     private data class Services(val rendering: Service?, val transport: Service?)
 
-    private val executor = Executors.newCachedThreadPool()
+    private val executor = Executors.newFixedThreadPool(3)
     private val cache = ConcurrentHashMap<String, Services>()
+
+    fun probe(descriptionUrl: String, callback: (Result) -> Unit) = executor.execute {
+        callback(runCatching {
+            val found = services(descriptionUrl)
+            if (found.rendering == null && found.transport == null) error("UPnP MediaRenderer services не найдены")
+            Result(true, "UPnP MediaRenderer API подтверждён")
+        }.getOrElse { Result(false, it.message ?: "UPnP descriptor недоступен") })
+    }
 
     fun adjustVolume(descriptionUrl: String, delta: Int, callback: (Result) -> Unit) = executor.execute {
         val result = runCatching {
-            val services = services(descriptionUrl)
-            val rendering = services.rendering ?: error("RenderingControl не найден")
+            val rendering = services(descriptionUrl).rendering ?: error("RenderingControl не найден")
             val current = getVolume(rendering).coerceIn(0, 100)
             val target = (current + delta).coerceIn(0, 100)
-            soap(
-                rendering,
-                "SetVolume",
-                "<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredVolume>$target</DesiredVolume>"
-            )
+            soap(rendering, "SetVolume", "<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredVolume>$target</DesiredVolume>")
             Result(true, "Громкость: $target%")
         }.getOrElse { Result(false, it.message ?: "Ошибка UPnP") }
         callback(result)
@@ -59,18 +65,18 @@ class UpnpController {
     private fun services(descriptionUrl: String): Services = cache[descriptionUrl] ?: discover(descriptionUrl).also { cache[descriptionUrl] = it }
 
     private fun discover(descriptionUrl: String): Services {
+        val base = URI(descriptionUrl)
+        val host = base.host ?: error("UPnP LOCATION без host")
+        LocalEndpointPolicy.requireSamePrivateHost(host, descriptionUrl, setOf("http", "https"))
         val connection = URL(descriptionUrl).openConnection() as HttpURLConnection
+        connection.instanceFollowRedirects = false
         connection.connectTimeout = 1800
         connection.readTimeout = 2200
         connection.requestMethod = "GET"
-        val input = connection.inputStream
-        val factory = DocumentBuilderFactory.newInstance().apply {
-            isNamespaceAware = true
-            runCatching { setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
-            runCatching { setFeature("http://xml.org/sax/features/external-general-entities", false) }
-            runCatching { setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
-        }
-        val doc = input.use { factory.newDocumentBuilder().parse(it) }
+        val code = connection.responseCode
+        if (code !in 200..299) error("UPnP descriptor HTTP $code")
+        val text = connection.inputStream.use { BoundedIo.readUtf8(it) }
+        val doc = XmlSecurity.factory().newDocumentBuilder().parse(ByteArrayInputStream(text.toByteArray(Charsets.UTF_8)))
         val services = doc.getElementsByTagNameNS("*", "service")
         var rendering: Service? = null
         var transport: Service? = null
@@ -87,8 +93,9 @@ class UpnpController {
                 }
             }
             if (!type.isNullOrBlank() && !control.isNullOrBlank()) {
-                val absolute = URI(descriptionUrl).resolve(control).toString()
-                val service = Service(type, absolute)
+                val absolute = base.resolve(control).toString()
+                LocalEndpointPolicy.requireSamePrivateHost(host, absolute, setOf("http", "https"))
+                val service = Service(type, absolute, host)
                 if ("RenderingControl" in type) rendering = service
                 if ("AVTransport" in type) transport = service
             }
@@ -103,11 +110,13 @@ class UpnpController {
     }
 
     private fun soap(service: Service, action: String, inner: String): String {
+        LocalEndpointPolicy.requireSamePrivateHost(service.host, service.controlUrl, setOf("http", "https"))
         val body = """<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
 <s:Body><u:$action xmlns:u="${service.type}">$inner</u:$action></s:Body></s:Envelope>"""
         val bytes = body.toByteArray(Charsets.UTF_8)
         val connection = URL(service.controlUrl).openConnection() as HttpURLConnection
+        connection.instanceFollowRedirects = false
         connection.connectTimeout = 1800
         connection.readTimeout = 2200
         connection.requestMethod = "POST"
@@ -118,7 +127,7 @@ class UpnpController {
         connection.outputStream.use { it.write(bytes) }
         val code = connection.responseCode
         val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-        val response = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        val response = stream?.use { BoundedIo.readUtf8(it) }.orEmpty()
         if (code !in 200..299) error("UPnP HTTP $code")
         return response
     }

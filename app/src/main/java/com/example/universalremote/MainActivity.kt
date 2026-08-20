@@ -5,6 +5,8 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
@@ -51,8 +53,10 @@ import com.example.universalremote.model.ControlCapability
 import com.example.universalremote.model.NearbyDevice
 import com.example.universalremote.model.ScanConfig
 import com.example.universalremote.network.DeviceAnalyzer
+import com.example.universalremote.network.Ipv4Range
 import com.example.universalremote.network.ServiceHealthProbe
 import com.example.universalremote.ui.DeviceAdapter
+import java.net.Inet4Address
 import java.net.URI
 
 class MainActivity : AppCompatActivity() {
@@ -76,7 +80,7 @@ class MainActivity : AppCompatActivity() {
     private val roku = RokuController()
     private lateinit var samsung: SamsungTvController
     private val wled = WledController()
-    private val cast = CastV2Controller()
+    private lateinit var cast: CastV2Controller
     private val yeelight = YeelightController()
     private lateinit var lgWebOs: LgWebOsController
     private lateinit var hue: HueController
@@ -97,12 +101,18 @@ class MainActivity : AppCompatActivity() {
         startScan()
     }
 
+    private val stopLanAfterGrace = Runnable { runCatching { lan.stop() } }
+
     private val finishScan = Runnable {
-        stopSources()
+        // Radio/multicast windows are time-bounded, but LAN gets an extra grace period so a /22 sweep
+        // is not killed merely because the UI discovery timer expired.
+        stopShortSources()
+        handler.removeCallbacks(stopLanAfterGrace)
+        handler.postDelayed(stopLanAfterGrace, 60_000L)
         hint.text = if (devices.isEmpty()) {
             val diag = sourceStatus.entries.joinToString(" • ") { "${it.key}: ${it.value}" }.take(180)
-            if (diag.isBlank()) "0 устройств • проверьте Bluetooth, Nearby devices, геолокацию и Wi‑Fi" else "0 • $diag"
-        } else plural(devices.size) + " • поиск завершён"
+            if (diag.isBlank()) "0 устройств • LAN ещё может завершать neighbor-sweep" else "0 • $diag • LAN ещё проверяется"
+        } else plural(devices.size) + " • быстрый поиск завершён, LAN может ещё добавлять устройства"
         scanButton.text = "↻  ИСКАТЬ ЕЩЁ"
     }
 
@@ -113,6 +123,7 @@ class MainActivity : AppCompatActivity() {
         samsung = SamsungTvController(this)
         lgWebOs = LgWebOsController(this)
         hue = HueController(this)
+        cast = CastV2Controller(this)
         ble = BleDiscovery(this, ::addDevice) { updateSourceStatus("BLE", it) }
         classic = BluetoothClassicDiscovery(this, ::addDevice) { updateSourceStatus("BT", it) }
         nsd = NsdDiscovery(this, ::addDevice)
@@ -131,9 +142,9 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(26), dp(18), dp(14))
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c("#07111F"), c("#101B35"), c("#132842")))
         }
-        root.addView(text("UNIVERSAL REMOTE • v0.7.0", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+        root.addView(text("UNIVERSAL REMOTE • v0.7.1", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
         root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
-        root.addView(text("Пульт открывается только после проверки реального API • Android TV • Samsung • Roku • LG • Cast • Hue • Yeelight • WLED", 13f, c("#AABBD4"), false))
+        root.addView(text("Двухфазный LAN-поиск • кандидат ≠ подтверждённый API • Android TV • Samsung • Roku • LG • Cast • Hue • Yeelight • WLED", 13f, c("#AABBD4"), false))
 
         val radar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -228,19 +239,24 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopScan() {
         handler.removeCallbacks(finishScan)
+        handler.removeCallbacks(stopLanAfterGrace)
         stopSources()
     }
 
-    private fun stopSources() {
+    private fun stopShortSources() {
         runCatching { ble.stop() }
         runCatching { classic.stop() }
         runCatching { wifiDiscovery.stop() }
         runCatching { nsd.stop() }
         runCatching { ssdp.stop() }
-        runCatching { lan.stop() }
         runCatching { pjDiscovery.stop() }
         runCatching { yeelightDiscovery.stop() }
         releaseMulticast()
+    }
+
+    private fun stopSources() {
+        stopShortSources()
+        runCatching { lan.stop() }
     }
 
     private fun updateSourceStatus(source: String, status: String) = runOnUiThread {
@@ -307,7 +323,7 @@ class MainActivity : AppCompatActivity() {
             val q = query.trim().lowercase()
             val filtered = devices.values.asSequence()
                 .filter { d -> selectedKinds.isEmpty() || selectedKinds.any { matchesKind(d, it) } }
-                .filter { d -> !onlyControllable || d.controllable }
+                .filter { d -> !onlyControllable || d.controllable || d.verified }
                 .filter { d ->
                     if (q.isBlank()) true else listOf(
                         d.name, d.kind, d.brand.orEmpty(), d.hardwareVendor.orEmpty(), d.protocol, d.address,
@@ -325,7 +341,7 @@ class MainActivity : AppCompatActivity() {
         val labels = arrayOf("Телевизоры", "Колонки / аудио", "Свет", "Компьютеры", "Проекторы", "Телефоны", "Принтеры", "Другие")
         val checked = labels.map { it in selectedKinds }.toBooleanArray()
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(6), dp(20), 0) }
-        val controllable = CheckBox(this).apply { text = "Только с доступным управлением"; isChecked = onlyControllable }
+        val controllable = CheckBox(this).apply { text = "Только кандидаты / API подтверждён"; isChecked = onlyControllable }
         box.addView(controllable)
         AlertDialog.Builder(this)
             .setTitle("Фильтры")
@@ -423,10 +439,10 @@ class MainActivity : AppCompatActivity() {
         layout.addView(controlTestButton)
 
         val d0 = currentDevice(initial.id)
-        if (isRemoteCandidate(d0)) {
-            layout.addView(controlRow("🎛 ОТКРЫТЬ ПУЛЬТ") { showRemote(currentDevice(initial.id)) })
-        } else if (d0.controllable) {
-            layout.addView(controlRow("Как подключить управление") { showPairingInfo(d0) })
+        when {
+            d0.verified -> layout.addView(controlRow("🎛 ОТКРЫТЬ ПУЛЬТ • API ✓") { showRemote(currentDevice(initial.id)) })
+            isRemoteCandidate(d0) -> layout.addView(controlRow("🧭 ПРОВЕРИТЬ И ОТКРЫТЬ ПУЛЬТ") { detectAndOpenRemote(currentDevice(initial.id)) })
+            else -> layout.addView(controlRow("Как подключить управление") { showPairingInfo(d0) })
         }
 
         details.text = deviceDetailsText(d0) + if (hostOf(d0.address) != null || d0.ipAddress != null) "\n\nСетевой анализ запускается…" else ""
@@ -477,6 +493,7 @@ class MainActivity : AppCompatActivity() {
             appendLine("Расстояние: $range")
             appendLine("Адрес: ${d.address}")
             appendLine("Возможности: $caps")
+            appendLine("Управление: ${when { d.verified -> "API подтверждён ✓"; d.controllable || isRemoteCandidate(d) -> "кандидат — требуется проверка API/pairing"; else -> "не подтверждено" }}")
             appendLine("Статус анализа: ${d.analysisNote ?: "—"}")
             appendLine()
             appendLine("Открытые TCP-службы:")
@@ -517,7 +534,7 @@ class MainActivity : AppCompatActivity() {
         return when {
             6466 in ports || 6467 in ports -> d.copy(
                 kind = if (d.kind.contains("Телевизор") || d.kind.contains("ТВ")) d.kind else "Телевизор / Android TV",
-                protocol = "Android TV Remote Service v2",
+                protocol = "Android TV Remote Service v2 (кандидат до pairing)",
                 brand = d.brand ?: "Android TV",
                 controllable = true,
                 capabilities = d.capabilities + setOf(
@@ -529,6 +546,16 @@ class MainActivity : AppCompatActivity() {
                 kind = if (d.kind.contains("Телевизор") || d.kind.contains("ТВ")) d.kind else "Телевизор / медиаплеер",
                 protocol = "Roku ECP (кандидат, проверяется перед командой)",
                 brand = d.brand ?: "Roku",
+                controllable = true,
+                capabilities = d.capabilities + setOf(
+                    ControlCapability.POWER, ControlCapability.VOLUME, ControlCapability.MUTE,
+                    ControlCapability.MEDIA, ControlCapability.NAVIGATION, ControlCapability.CHANNEL, ControlCapability.INPUT
+                )
+            )
+            8001 in ports || 8002 in ports -> d.copy(
+                kind = if (d.kind.contains("Телевизор") || d.kind.contains("ТВ")) d.kind else "Телевизор / Samsung Tizen (кандидат)",
+                protocol = "Samsung Tizen Remote API (кандидат, проверяется перед командой)",
+                brand = d.brand ?: "Samsung",
                 controllable = true,
                 capabilities = d.capabilities + setOf(
                     ControlCapability.POWER, ControlCapability.VOLUME, ControlCapability.MUTE,
@@ -615,47 +642,51 @@ class MainActivity : AppCompatActivity() {
             return runOnUiThread { showAndroidTvRemote(d, host) }
         }
         if ("webos" in idText || ("lg" in idText && (3000 in ports || 3001 in ports))) {
-            return runOnUiThread { showLgWebOsRemote(d, host) }
+            return lgWebOs.probe(host) { result -> runOnUiThread {
+                if (result.ok) { markVerified(d.id); showLgWebOsRemote(d, host) } else showNoControlFound(d, host, listOf(result.message))
+            } }
         }
         if ("philips hue" in idText || "hue bridge" in idText) {
-            return hue.probe(host) { result -> runOnUiThread { if (result.ok) showHueRemote(d, host) else showNoControlFound(d, host, listOf(result.message)) } }
+            return hue.probe(host) { result -> runOnUiThread { if (result.ok) { markVerified(d.id); showHueRemote(d, host) } else showNoControlFound(d, host, listOf(result.message)) } }
         }
         if (d.protocol.contains("PJLink", true) || 4352 in ports) {
-            return pjlink.probe(host) { result -> runOnUiThread { if (result.ok) showPjLinkRemote(d, host) else showNoControlFound(d, host, listOf(result.message)) } }
+            return pjlink.probe(host) { result -> runOnUiThread { if (result.ok) { markVerified(d.id); showPjLinkRemote(d, host) } else showNoControlFound(d, host, listOf(result.message)) } }
         }
         if (d.descriptionUrl != null && d.protocol.contains("UPnP MediaRenderer", true)) {
-            return runOnUiThread { showUpnpRemote(d) }
+            return upnp.probe(d.descriptionUrl) { result -> runOnUiThread {
+                if (result.ok) { markVerified(d.id); showUpnpRemote(d) } else showNoControlFound(d, host, listOf(result.message))
+            } }
         }
 
         val errors = mutableListOf<String>()
         roku.probe(host) { rokuResult, _ ->
             if (rokuResult.ok) {
-                runOnUiThread { showRokuRemote(d, host) }
+                runOnUiThread { markVerified(d.id); showRokuRemote(d, host) }
             } else {
                 errors += "Roku: ${rokuResult.message}"
                 samsung.probe(host) { samsungResult ->
                     if (samsungResult.ok) {
-                        runOnUiThread { showSamsungRemote(d, host) }
+                        runOnUiThread { markVerified(d.id); showSamsungRemote(d, host) }
                     } else {
                         errors += "Samsung: ${samsungResult.message}"
                         hue.probe(host) { hueResult ->
                             if (hueResult.ok) {
-                                runOnUiThread { showHueRemote(d, host) }
+                                runOnUiThread { markVerified(d.id); showHueRemote(d, host) }
                             } else {
                                 errors += "Hue: ${hueResult.message}"
                                 wled.probe(host) { wledResult ->
                                     if (wledResult.ok) {
-                                        runOnUiThread { showWledRemote(d, host, wledResult.message) }
+                                        runOnUiThread { markVerified(d.id); showWledRemote(d, host, wledResult.message) }
                                     } else {
                                         errors += "WLED: ${wledResult.message}"
-                                        yeelight.probe(host) { yeelightResult ->
+                                        yeelight.probe(host, yeelightPort(d)) { yeelightResult ->
                                             if (yeelightResult.ok) {
-                                                runOnUiThread { showYeelightRemote(d, host) }
+                                                runOnUiThread { markVerified(d.id); showYeelightRemote(d, host, yeelightPort(d)) }
                                             } else {
                                                 errors += "Yeelight: ${yeelightResult.message}"
                                                 cast.probe(host) { castResult ->
                                                     if (castResult.ok) {
-                                                        runOnUiThread { showCastRemote(d, host) }
+                                                        runOnUiThread { markVerified(d.id); showCastRemote(d, host) }
                                                     } else {
                                                         errors += "Cast: ${castResult.message}"
                                                         runOnUiThread { showNoControlFound(d, host, errors) }
@@ -700,6 +731,8 @@ class MainActivity : AppCompatActivity() {
                 val host = input.text.toString().trim()
                 if (!host.matches(Regex("(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}"))) {
                     toast("Введите корректный IPv4")
+                } else if (!isInCurrentWifiSubnet(host)) {
+                    toast("Разрешены только private IPv4 текущей Wi‑Fi подсети")
                 } else {
                     val d = NearbyDevice(
                         id = "manual:$host",
@@ -829,7 +862,7 @@ class MainActivity : AppCompatActivity() {
     private fun probeAndShowSamsung(d: NearbyDevice, host: String) {
         toast("Проверяю Samsung Tizen API…")
         samsung.probe(host) { result -> runOnUiThread {
-            if (result.ok) showSamsungRemote(d, host) else showPairingInfo(d)
+            if (result.ok) { markVerified(d.id); showSamsungRemote(d, host) } else showPairingInfo(d)
         } }
     }
 
@@ -1013,33 +1046,37 @@ class MainActivity : AppCompatActivity() {
         action { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
     }
 
+    private fun yeelightPort(d: NearbyDevice): Int = d.address.substringAfter(':', "55443").toIntOrNull()?.takeIf { it in 1..65535 } ?: 55443
+
     private fun probeAndShowYeelight(d: NearbyDevice, host: String) {
+        val port = yeelightPort(d)
         toast("Проверяю Yeelight LAN Control…")
-        yeelight.probe(host) { result -> runOnUiThread {
+        yeelight.probe(host, port) { result -> runOnUiThread {
             if (!result.ok) return@runOnUiThread toast(result.message)
-            showYeelightRemote(d, host)
+            markVerified(d.id)
+            showYeelightRemote(d, host, port)
         } }
     }
 
-    private fun showYeelightRemote(d: NearbyDevice, host: String) {
+    private fun showYeelightRemote(d: NearbyDevice, host: String, port: Int = yeelightPort(d)) {
         val layout = remoteLayout()
-        layout.addView(text("Для некоторых моделей нужно один раз включить LAN Control в официальном приложении Yeelight.", 13f, c("#AABBD4"), false))
+        layout.addView(text("LAN Control • $host:$port. Для некоторых моделей его нужно один раз включить в официальном приложении Yeelight.", 13f, c("#AABBD4"), false))
         addRemoteRow(layout,
-            "ВКЛ" to { runYeelight(d) { cb -> yeelight.power(host, true, cb) } },
-            "ВЫКЛ" to { runYeelight(d) { cb -> yeelight.power(host, false, cb) } }
+            "ВКЛ" to { runYeelight(d) { cb -> yeelight.power(host, true, port, cb) } },
+            "ВЫКЛ" to { runYeelight(d) { cb -> yeelight.power(host, false, port, cb) } }
         )
         layout.addView(sectionTitle("ЯРКОСТЬ"))
         addRemoteRow(layout,
-            "25%" to { runYeelight(d) { cb -> yeelight.brightness(host, 25, cb) } },
-            "50%" to { runYeelight(d) { cb -> yeelight.brightness(host, 50, cb) } },
-            "100%" to { runYeelight(d) { cb -> yeelight.brightness(host, 100, cb) } }
+            "25%" to { runYeelight(d) { cb -> yeelight.brightness(host, 25, port, cb) } },
+            "50%" to { runYeelight(d) { cb -> yeelight.brightness(host, 50, port, cb) } },
+            "100%" to { runYeelight(d) { cb -> yeelight.brightness(host, 100, port, cb) } }
         )
         layout.addView(sectionTitle("ЦВЕТ"))
         addRemoteRow(layout,
-            "Красный" to { runYeelight(d) { cb -> yeelight.color(host, 255, 0, 0, cb) } },
-            "Зелёный" to { runYeelight(d) { cb -> yeelight.color(host, 0, 255, 0, cb) } },
-            "Синий" to { runYeelight(d) { cb -> yeelight.color(host, 0, 0, 255, cb) } },
-            "Белый" to { runYeelight(d) { cb -> yeelight.color(host, 255, 255, 255, cb) } }
+            "Красный" to { runYeelight(d) { cb -> yeelight.color(host, 255, 0, 0, port, cb) } },
+            "Зелёный" to { runYeelight(d) { cb -> yeelight.color(host, 0, 255, 0, port, cb) } },
+            "Синий" to { runYeelight(d) { cb -> yeelight.color(host, 0, 0, 255, port, cb) } },
+            "Белый" to { runYeelight(d) { cb -> yeelight.color(host, 255, 255, 255, port, cb) } }
         )
         AlertDialog.Builder(this).setTitle("Yeelight • ${d.name}").setView(layout).setNegativeButton("Закрыть", null).show()
     }
@@ -1165,15 +1202,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun sendPjLink(d: NearbyDevice, passwordField: EditText, host: String, action: (CharArray?, (PjLinkController.Result) -> Unit) -> Unit) {
-        val raw = passwordField.text?.toString().orEmpty()
-        val password = raw.takeIf { it.isNotBlank() }?.toCharArray()
-        passwordField.text?.clear()
+        val editable = passwordField.text
+        val password = if (editable != null && editable.any { !it.isWhitespace() }) CharArray(editable.length) { i -> editable[i] } else null
+        editable?.clear()
         action(password) { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
     }
 
     private fun markVerified(id: String) {
         val existing = devices[id] ?: return
-        devices[id] = existing.copy(verified = true)
+        devices[id] = existing.copy(controllable = true, verified = true)
         scheduleRender()
     }
 
@@ -1200,6 +1237,20 @@ class MainActivity : AppCompatActivity() {
         ControlCapability.LIGHT_POWER -> "свет"
         ControlCapability.BRIGHTNESS -> "яркость"
         ControlCapability.COLOR -> "цвет"
+    }
+
+    private fun isInCurrentWifiSubnet(host: String): Boolean {
+        val target = Ipv4Range.parseIp(host) ?: return false
+        if (!Ipv4Range.isPrivate(target)) return false
+        val cm = getSystemService(ConnectivityManager::class.java)
+        val network = cm.allNetworks.firstOrNull { n ->
+            cm.getNetworkCapabilities(n)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        } ?: return false
+        val local = cm.getLinkProperties(network)?.linkAddresses?.firstOrNull { it.address is Inet4Address } ?: return false
+        val own = Ipv4Range.ipv4ToInt(local.address as Inet4Address)
+        val prefix = local.prefixLength.coerceIn(8, 30)
+        val mask = -1 shl (32 - prefix)
+        return (target and mask) == (own and mask)
     }
 
     private fun hostOf(address: String): String? = runCatching {

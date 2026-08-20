@@ -1,31 +1,26 @@
 package com.example.universalremote.control
 
+import android.content.Context
+import com.example.universalremote.network.LocalEndpointPolicy
+import com.example.universalremote.security.SecureStore
+import com.example.universalremote.security.TofuTls
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.net.InetSocketAddress
-import java.security.SecureRandom
-import java.security.cert.X509Certificate
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
-import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 
 /** Minimal local Google Cast v2 controller. It controls an already-running Cast receiver; it does not launch arbitrary media. */
-class CastV2Controller {
+class CastV2Controller(context: Context) {
     data class Result(val ok: Boolean, val message: String)
 
-    private val executor = Executors.newCachedThreadPool()
+    private val executor = Executors.newFixedThreadPool(3)
     private val requestIds = AtomicInteger(1)
-    private val trustManager = object : X509TrustManager {
-        override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-        override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-        override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-    }
-    private val sslContext = SSLContext.getInstance("TLS").apply { init(null, arrayOf<TrustManager>(trustManager), SecureRandom()) }
+    private val secrets = SecureStore(context, "cast_tls_pins")
+    private val tofu = TofuTls(secrets, "cast")
 
     fun probe(host: String, callback: (Result) -> Unit) = run(host, callback) { session ->
         session.receiverStatus()
@@ -67,7 +62,12 @@ class CastV2Controller {
     private fun run(host: String, callback: (Result) -> Unit, block: (Session) -> Result) {
         executor.execute {
             val result = runCatching {
-                open(host).use { socket -> block(Session(socket)) }
+                require(LocalEndpointPolicy.isPrivateIpv4(host)) { "разрешены только private LAN IPv4" }
+                open(host).use { socket ->
+                    val value = block(Session(socket))
+                    if (value.ok) tofu.pin(host, socket)
+                    value
+                }
             }.getOrElse { Result(false, "Google Cast недоступен: ${it.message ?: it.javaClass.simpleName}") }
             callback(result)
         }
@@ -77,7 +77,7 @@ class CastV2Controller {
         val raw = java.net.Socket()
         raw.connect(InetSocketAddress(host, 8009), 2200)
         raw.soTimeout = 2800
-        val socket = sslContext.socketFactory.createSocket(raw, host, 8009, true) as SSLSocket
+        val socket = tofu.sslContext(host).socketFactory.createSocket(raw, host, 8009, true) as SSLSocket
         socket.soTimeout = 2800
         socket.startHandshake()
         return socket

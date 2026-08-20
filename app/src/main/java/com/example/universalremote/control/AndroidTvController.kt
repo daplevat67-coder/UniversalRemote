@@ -3,6 +3,7 @@ package com.example.universalremote.control
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import com.example.universalremote.network.LocalEndpointPolicy
 import java.io.InputStream
 import java.io.OutputStream
 import java.math.BigInteger
@@ -38,7 +39,8 @@ class AndroidTvController(context: Context) {
     data class Result(val ok: Boolean, val message: String)
 
     private val prefs = context.getSharedPreferences("android_tv_pairing", Context.MODE_PRIVATE)
-    private val executor = Executors.newCachedThreadPool()
+    private val executor = Executors.newFixedThreadPool(4)
+    private val scheduler = Executors.newSingleThreadScheduledExecutor()
     private val pairing = ConcurrentHashMap<String, PairingSession>()
     private val remotes = ConcurrentHashMap<String, RemoteSession>()
     private val identityAlias = "universal_remote_android_tv_identity_v1"
@@ -75,7 +77,10 @@ class AndroidTvController(context: Context) {
             readPairField(session.input, 31)
 
             pairing[host] = session
-            callback(Result(true, "На телевизоре должен появиться 6-значный HEX-код. Введите его в приложении."))
+            scheduler.schedule({
+                if (pairing.remove(host, session)) session.close()
+            }, 90, TimeUnit.SECONDS)
+            callback(Result(true, "На телевизоре должен появиться 6-значный HEX-код. Сессия pairing действует 90 секунд."))
         }.onFailure {
             pairing.remove(host)?.close()
             callback(Result(false, friendly(it)))
@@ -125,7 +130,7 @@ class AndroidTvController(context: Context) {
     private inner class RemoteSession(private val host: String) {
         private val ready = CountDownLatch(1)
         @Volatile private var closed = false
-        private val socket: SSLSocket = connectTls(host, 6466, pinnedTrust(host)).apply { soTimeout = 0 }
+        private val socket: SSLSocket = connectTls(host, 6466, pinnedTrust(host)).apply { soTimeout = 15_000 }
         private val input = socket.inputStream
         private val output = socket.outputStream
         @Volatile private var activeFeatures = REQUESTED_FEATURES
@@ -244,6 +249,7 @@ class AndroidTvController(context: Context) {
     }
 
     private fun connectTls(host: String, port: Int, trust: X509TrustManager): SSLSocket {
+        require(LocalEndpointPolicy.isPrivateIpv4(host)) { "Android TV: разрешены только private LAN IPv4" }
         val context = SSLContext.getInstance("TLS").apply { init(arrayOf<KeyManager>(keyManager()), arrayOf<TrustManager>(trust), SecureRandom()) }
         val plain = Socket()
         plain.connect(InetSocketAddress(host, port), 2600)
@@ -313,6 +319,7 @@ class AndroidTvController(context: Context) {
     fun close() {
         pairing.values.forEach { it.close() }; pairing.clear()
         remotes.values.forEach { it.close() }; remotes.clear()
+        scheduler.shutdownNow()
         executor.shutdownNow()
     }
 
