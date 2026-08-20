@@ -9,5 +9,8 @@ data class NearbyDevice(
     val controllable: Boolean = false,
     val signalDbm: Int? = null,
     val distanceMeters: Double? = null,
-    val brand: String? = null
+    val brand: String? = null,
+    val capabilities: Set<ControlCapability> = emptySet(),
+    val descriptionUrl: String? = null,
+    val verified: Boolean = false
 )
