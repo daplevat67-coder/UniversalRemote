@@ -12,5 +12,13 @@ data class NearbyDevice(
     val brand: String? = null,
     val capabilities: Set<ControlCapability> = emptySet(),
     val descriptionUrl: String? = null,
-    val verified: Boolean = false
+    val verified: Boolean = false,
+    val ipAddress: String? = null,
+    val macAddress: String? = null,
+    val hardwareVendor: String? = null,
+    val openPorts: List<PortService> = emptyList(),
+    val osHint: String? = null,
+    val hostname: String? = null,
+    val analysisNote: String? = null,
+    val securityFindings: List<String> = emptyList()
 )
