@@ -13,7 +13,7 @@ class NsdDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Uni
         "_googlecast._tcp.", "_airplay._tcp.", "_raop._tcp.",
         "_androidtvremote2._tcp.", "_hap._tcp.", "_matter._tcp.",
         "_matterc._udp.", "_matterd._udp.", "_ipp._tcp.", "_spotify-connect._tcp.",
-        "_sonos._tcp.", "_philipshue._tcp.", "_hue._tcp.", "_roku._tcp.",
+        "_sonos._tcp.", "_philipshue._tcp.", "_hue._tcp.", "_wled._tcp.", "_roku._tcp.",
         "_bose._tcp.", "_smb._tcp.", "_workstation._tcp.", "_ssh._tcp."
     )
 
@@ -34,18 +34,30 @@ class NsdDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Uni
                         val info = classify(s.serviceType, s.serviceName)
                         val attrs = runCatching { s.attributes }.getOrNull().orEmpty()
                         val location = attrs["location"]?.toString(Charsets.UTF_8)?.takeIf { it.startsWith("http") }
-                        val sonos = s.serviceType.contains("sonos", ignoreCase = true)
+                        val typeLower = s.serviceType.lowercase()
+                        val sonos = "sonos" in typeLower
+                        val androidTv = "androidtvremote2" in typeLower
+                        val roku = "roku" in typeLower
+                        val wled = "wled" in typeLower
+                        val protocol = when {
+                            androidTv -> "Android TV Remote Service v2"
+                            roku -> "Roku ECP"
+                            wled -> "WLED JSON API"
+                            sonos && location != null -> "UPnP MediaRenderer / Sonos mDNS"
+                            else -> "mDNS ${s.serviceType}"
+                        }
                         onDevice(
                             NearbyDevice(
                                 id = "mdns:${s.serviceType}:${s.serviceName}:$host",
                                 name = s.serviceName.ifBlank { info.first },
                                 kind = info.first,
-                                protocol = if (sonos && location != null) "UPnP MediaRenderer / Sonos mDNS" else "mDNS ${s.serviceType}",
+                                protocol = protocol,
                                 address = "$host:${s.port}",
-                                controllable = sonos && location != null,
+                                controllable = androidTv || roku || wled || (sonos && location != null),
                                 brand = info.second,
                                 capabilities = info.third,
-                                descriptionUrl = location
+                                descriptionUrl = location,
+                                ipAddress = host
                             )
                         )
                     }
@@ -65,13 +77,14 @@ class NsdDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Uni
         val t = type.lowercase()
         val n = name.lowercase()
         return when {
-            "androidtv" in t -> Triple("Телевизор / Android TV", "Android TV", setOf(ControlCapability.POWER, ControlCapability.VOLUME, ControlCapability.MEDIA))
+            "androidtv" in t -> Triple("Телевизор / Android TV", "Android TV", setOf(ControlCapability.POWER, ControlCapability.VOLUME, ControlCapability.MUTE, ControlCapability.MEDIA, ControlCapability.NAVIGATION, ControlCapability.INPUT))
             "googlecast" in t -> Triple("ТВ / медиаплеер", "Google Cast", setOf(ControlCapability.VOLUME, ControlCapability.MEDIA))
             "airplay" in t || "raop" in t -> Triple("ТВ / медиаплеер", "Apple AirPlay", setOf(ControlCapability.VOLUME, ControlCapability.MEDIA))
             "spotify" in t -> Triple("Колонка / медиаплеер", "Spotify Connect", setOf(ControlCapability.VOLUME, ControlCapability.MEDIA))
             "sonos" in t -> Triple("Колонка / медиаплеер", "Sonos", setOf(ControlCapability.VOLUME, ControlCapability.MUTE, ControlCapability.MEDIA))
             "bose" in t -> Triple("Колонка / медиаплеер", "Bose", emptySet())
-            "roku" in t -> Triple("Телевизор / медиаплеер", "Roku", emptySet())
+            "roku" in t -> Triple("Телевизор / медиаплеер", "Roku", setOf(ControlCapability.POWER, ControlCapability.VOLUME, ControlCapability.MUTE, ControlCapability.MEDIA, ControlCapability.NAVIGATION, ControlCapability.CHANNEL, ControlCapability.INPUT))
+            "wled" in t -> Triple("Лампа / свет", "WLED", setOf(ControlCapability.LIGHT_POWER, ControlCapability.BRIGHTNESS, ControlCapability.COLOR))
             "philipshue" in t || "_hue" in t -> Triple("Лампа / свет", "Philips Hue", setOf(ControlCapability.LIGHT_POWER, ControlCapability.BRIGHTNESS, ControlCapability.COLOR))
             "smb" in t || "workstation" in t || "ssh" in t -> Triple("Компьютер", null, emptySet())
             "matter" in t || "hap" in t -> {

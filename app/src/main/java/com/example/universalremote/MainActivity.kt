@@ -28,7 +28,11 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.example.universalremote.control.AndroidTvController
 import com.example.universalremote.control.PjLinkController
+import com.example.universalremote.control.RokuController
+import com.example.universalremote.control.SamsungTvController
+import com.example.universalremote.control.WledController
 import com.example.universalremote.control.UpnpController
 import com.example.universalremote.control.WakeOnLanController
 import com.example.universalremote.discovery.BleDiscovery
@@ -63,6 +67,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var wifiDiscovery: WifiDiscovery
     private val upnp = UpnpController()
     private val pjlink = PjLinkController()
+    private val roku = RokuController()
+    private val samsung = SamsungTvController()
+    private val wled = WledController()
+    private lateinit var androidTv: AndroidTvController
     private val analyzer = DeviceAnalyzer()
     private val wol = WakeOnLanController()
     private val healthProbe = ServiceHealthProbe()
@@ -91,6 +99,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         supportActionBar?.hide()
+        androidTv = AndroidTvController(this)
         ble = BleDiscovery(this, ::addDevice) { updateSourceStatus("BLE", it) }
         classic = BluetoothClassicDiscovery(this, ::addDevice) { updateSourceStatus("BT", it) }
         nsd = NsdDiscovery(this, ::addDevice)
@@ -108,9 +117,9 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(26), dp(18), dp(14))
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c("#07111F"), c("#101B35"), c("#132842")))
         }
-        root.addView(text("UNIVERSAL REMOTE • NETWORK LAB", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+        root.addView(text("UNIVERSAL REMOTE • v0.5.0", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
         root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
-        root.addView(text("BLE + Classic BT + Wi‑Fi эфир + mDNS + SSDP + LAN + PJLink", 13f, c("#AABBD4"), false))
+        root.addView(text("Поиск + реальные пульты: Android TV • Samsung • Roku • UPnP • PJLink • WLED", 13f, c("#AABBD4"), false))
 
         val radar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -246,7 +255,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun mergeDevice(old: NearbyDevice, fresh: NearbyDevice): NearbyDevice = fresh.copy(
+        controllable = old.controllable || fresh.controllable,
         verified = old.verified || fresh.verified,
+        brand = fresh.brand ?: old.brand,
+        capabilities = old.capabilities + fresh.capabilities,
+        descriptionUrl = fresh.descriptionUrl ?: old.descriptionUrl,
         ipAddress = fresh.ipAddress ?: old.ipAddress,
         macAddress = fresh.macAddress ?: old.macAddress,
         hardwareVendor = fresh.hardwareVendor ?: old.hardwareVendor,
@@ -390,12 +403,10 @@ class MainActivity : AppCompatActivity() {
         layout.addView(healthButton)
 
         val d0 = currentDevice(initial.id)
-        val upnpReady = d0.descriptionUrl != null && d0.protocol.contains("UPnP MediaRenderer")
-        val projectorHost = hostOf(d0.address)
-        when {
-            upnpReady -> layout.addView(controlRow("🎛 UPnP-пульт") { showUpnpRemote(currentDevice(initial.id)) })
-            d0.kind.contains("Проектор") && projectorHost != null -> layout.addView(controlRow("🎛 PJLink-пульт") { showPjLinkRemote(currentDevice(initial.id), projectorHost) })
-            d0.controllable -> layout.addView(controlRow("Как подключить управление") { showPairingInfo() })
+        if (isRemoteCandidate(d0)) {
+            layout.addView(controlRow("🎛 ОТКРЫТЬ ПУЛЬТ") { showRemote(currentDevice(initial.id)) })
+        } else if (d0.controllable) {
+            layout.addView(controlRow("Как подключить управление") { showPairingInfo(d0) })
         }
 
         details.text = deviceDetailsText(d0) + if (hostOf(d0.address) != null || d0.ipAddress != null) "\n\nСетевой анализ запускается…" else ""
@@ -418,8 +429,9 @@ class MainActivity : AppCompatActivity() {
         analyzer.analyze(device.copy(ipAddress = host), loadScanConfig()) { analyzed ->
             runOnUiThread {
                 val id = device.id
+                val enriched = enrichControlFromPorts(analyzed)
                 val old = devices[id]
-                if (old != null) devices[id] = mergeDevice(old, analyzed) else devices[id] = analyzed
+                if (old != null) devices[id] = mergeDevice(old, enriched) else devices[id] = enriched
                 scheduleRender()
                 details.text = deviceDetailsText(devices[id] ?: analyzed)
             }
@@ -478,9 +490,301 @@ class MainActivity : AppCompatActivity() {
             }.show()
     }
 
-    private fun showPairingInfo() {
+
+    private fun enrichControlFromPorts(d: NearbyDevice): NearbyDevice {
+        val ports = d.openPorts.map { it.port }.toSet()
+        return when {
+            6466 in ports || 6467 in ports -> d.copy(
+                kind = if (d.kind.contains("Телевизор") || d.kind.contains("ТВ")) d.kind else "Телевизор / Android TV",
+                protocol = "Android TV Remote Service v2",
+                brand = d.brand ?: "Android TV",
+                controllable = true,
+                capabilities = d.capabilities + setOf(
+                    ControlCapability.POWER, ControlCapability.VOLUME, ControlCapability.MUTE,
+                    ControlCapability.MEDIA, ControlCapability.NAVIGATION, ControlCapability.INPUT
+                )
+            )
+            8060 in ports -> d.copy(
+                kind = if (d.kind.contains("Телевизор") || d.kind.contains("ТВ")) d.kind else "Телевизор / медиаплеер",
+                protocol = "Roku ECP (кандидат, проверяется перед командой)",
+                brand = d.brand ?: "Roku",
+                controllable = true,
+                capabilities = d.capabilities + setOf(
+                    ControlCapability.POWER, ControlCapability.VOLUME, ControlCapability.MUTE,
+                    ControlCapability.MEDIA, ControlCapability.NAVIGATION, ControlCapability.CHANNEL, ControlCapability.INPUT
+                )
+            )
+            4352 in ports -> d.copy(
+                kind = "Проектор",
+                protocol = "PJLink",
+                controllable = true,
+                capabilities = d.capabilities + setOf(ControlCapability.POWER, ControlCapability.VOLUME, ControlCapability.MUTE)
+            )
+            else -> d
+        }
+    }
+
+    private fun isRemoteCandidate(d: NearbyDevice): Boolean = d.controllable ||
+        d.kind.contains("Телевизор", true) || d.kind.contains("ТВ", true) ||
+        d.kind.contains("Проектор", true) || d.kind.contains("Лампа", true) || d.kind.contains("свет", true) ||
+        d.protocol.contains("Roku", true) || d.protocol.contains("Android TV", true) || d.protocol.contains("Samsung", true) ||
+        d.protocol.contains("UPnP MediaRenderer", true) || d.protocol.contains("PJLink", true) ||
+        d.openPorts.any { it.port in setOf(4352, 6466, 6467, 8001, 8002, 8060) }
+
+    private fun showRemote(d: NearbyDevice) {
+        val host = d.ipAddress ?: hostOf(d.address)
+        if (host == null) return showPairingInfo(d)
+        val ports = d.openPorts.map { it.port }.toSet()
+        val idText = listOf(d.name, d.kind, d.brand.orEmpty(), d.protocol, d.hardwareVendor.orEmpty()).joinToString(" ").lowercase()
+        when {
+            "android tv" in idText || "google tv" in idText || 6466 in ports || 6467 in ports -> showAndroidTvRemote(d, host)
+            "roku" in idText || 8060 in ports -> showRokuRemote(d, host)
+            "samsung" in idText || "tizen" in idText -> showSamsungRemote(d, host)
+            8001 in ports || 8002 in ports -> probeAndShowSamsung(d, host)
+            d.kind.contains("Проектор", true) || d.protocol.contains("PJLink", true) || 4352 in ports -> showPjLinkRemote(d, host)
+            d.descriptionUrl != null && d.protocol.contains("UPnP MediaRenderer", true) -> showUpnpRemote(d)
+            d.kind.contains("Лампа", true) || d.kind.contains("свет", true) || "wled" in idText -> probeAndShowWled(d, host)
+            else -> showPairingInfo(d)
+        }
+    }
+
+    private fun showAndroidTvRemote(d: NearbyDevice, host: String) {
+        val scroll = ScrollView(this)
+        val layout = remoteLayout()
+        scroll.addView(layout)
+        val status = text(
+            if (androidTv.isPaired(host)) "✓ Сопряжение сохранено криптографически. PIN не хранится." else "Нужно один раз подтвердить 6-значный код с экрана TV.",
+            13f, if (androidTv.isPaired(host)) c("#72F1CE") else c("#AABBD4"), false
+        ).apply { setPadding(0, 0, 0, dp(8)) }
+        layout.addView(status)
+
+        val pin = EditText(this).apply {
+            hint = "Код с TV: например A1B2C3"
+            setSingleLine(true)
+            setTextColor(Color.WHITE)
+            setHintTextColor(c("#7185A3"))
+            inputType = InputType.TYPE_CLASS_TEXT
+        }
+        layout.addView(controlRow("🔐 Начать сопряжение") {
+            status.text = "Подключаемся к pairing service…"
+            androidTv.startPairing(host) { result -> runOnUiThread { status.text = result.message; toast(result.message) } }
+        })
+        layout.addView(pin)
+        layout.addView(controlRow("✓ Подтвердить код") {
+            val code = pin.text.toString(); pin.text.clear(); status.text = "Проверяем код…"
+            androidTv.finishPairing(host, code) { result -> runOnUiThread {
+                status.text = result.message
+                toast(result.message)
+                if (result.ok) markVerified(d.id)
+            } }
+        })
+
+        layout.addView(sectionTitle("НАВИГАЦИЯ"))
+        addDpad(layout,
+            { runAndroidTv(d, host, AndroidTvController.KEY_UP) },
+            { runAndroidTv(d, host, AndroidTvController.KEY_LEFT) },
+            { runAndroidTv(d, host, AndroidTvController.KEY_OK) },
+            { runAndroidTv(d, host, AndroidTvController.KEY_RIGHT) },
+            { runAndroidTv(d, host, AndroidTvController.KEY_DOWN) }
+        )
+        addRemoteRow(layout,
+            "⌂ Home" to { runAndroidTv(d, host, AndroidTvController.KEY_HOME) },
+            "↩ Back" to { runAndroidTv(d, host, AndroidTvController.KEY_BACK) },
+            "⏻ Power" to { runAndroidTv(d, host, AndroidTvController.KEY_POWER) }
+        )
+        addRemoteRow(layout,
+            "Vol −" to { runAndroidTv(d, host, AndroidTvController.KEY_VOL_DOWN) },
+            "Mute" to { runAndroidTv(d, host, AndroidTvController.KEY_VOLUME_MUTE) },
+            "Vol +" to { runAndroidTv(d, host, AndroidTvController.KEY_VOL_UP) }
+        )
+        addRemoteRow(layout,
+            "⏪" to { runAndroidTv(d, host, AndroidTvController.KEY_REWIND) },
+            "▶/Ⅱ" to { runAndroidTv(d, host, AndroidTvController.KEY_PLAY_PAUSE) },
+            "⏩" to { runAndroidTv(d, host, AndroidTvController.KEY_FAST_FORWARD) }
+        )
+        addRemoteRow(layout,
+            "⚙ Settings" to { runAndroidTv(d, host, AndroidTvController.KEY_SETTINGS) },
+            "Input" to { runAndroidTv(d, host, AndroidTvController.KEY_INPUT) }
+        )
+        layout.addView(controlRow("Забыть сопряжение этого TV") {
+            androidTv.forget(host); status.text = "Сопряжение удалено. Для управления нужен новый код."; toast("Сопряжение удалено")
+        })
+        AlertDialog.Builder(this).setTitle("Android TV • ${d.name}").setView(scroll).setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun runAndroidTv(d: NearbyDevice, host: String, key: Int) {
+        androidTv.key(host, key) { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
+    }
+
+    private fun showRokuRemote(d: NearbyDevice, host: String) {
+        roku.probe(host) { probe, info -> runOnUiThread {
+            if (!probe.ok) return@runOnUiThread toast(probe.message)
+            val scroll = ScrollView(this)
+            val layout = remoteLayout(); scroll.addView(layout)
+            layout.addView(text(info?.let { "${it.name} • ${it.model}" } ?: "Roku ECP", 13f, c("#72F1CE"), false))
+            layout.addView(sectionTitle("НАВИГАЦИЯ"))
+            addDpad(layout,
+                { runRoku(d, host, "Up") }, { runRoku(d, host, "Left") }, { runRoku(d, host, "Select") },
+                { runRoku(d, host, "Right") }, { runRoku(d, host, "Down") }
+            )
+            addRemoteRow(layout,
+                "⌂ Home" to { runRoku(d, host, "Home") },
+                "↩ Back" to { runRoku(d, host, "Back") },
+                "Info" to { runRoku(d, host, "Info") }
+            )
+            addRemoteRow(layout,
+                "Vol −" to { runRoku(d, host, "VolumeDown") },
+                "Mute" to { runRoku(d, host, "VolumeMute") },
+                "Vol +" to { runRoku(d, host, "VolumeUp") }
+            )
+            addRemoteRow(layout,
+                "⏪" to { runRoku(d, host, "Rev") },
+                "▶/Ⅱ" to { runRoku(d, host, "Play") },
+                "⏩" to { runRoku(d, host, "Fwd") }
+            )
+            addRemoteRow(layout,
+                "⏻ On" to { runRoku(d, host, "PowerOn") },
+                "⏻ Off" to { runRoku(d, host, "PowerOff") }
+            )
+            addRemoteRow(layout,
+                "HDMI 1" to { runRoku(d, host, "InputHDMI1") },
+                "HDMI 2" to { runRoku(d, host, "InputHDMI2") },
+                "HDMI 3" to { runRoku(d, host, "InputHDMI3") }
+            )
+            AlertDialog.Builder(this).setTitle("Roku • ${d.name}").setView(scroll).setNegativeButton("Закрыть", null).show()
+        } }
+    }
+
+    private fun runRoku(d: NearbyDevice, host: String, key: String) {
+        roku.key(host, key) { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
+    }
+
+
+    private fun probeAndShowSamsung(d: NearbyDevice, host: String) {
+        toast("Проверяю Samsung Tizen API…")
+        samsung.probe(host) { result -> runOnUiThread {
+            if (result.ok) showSamsungRemote(d, host) else showPairingInfo(d)
+        } }
+    }
+
+    private fun showSamsungRemote(d: NearbyDevice, host: String) {
+        val scroll = ScrollView(this)
+        val layout = remoteLayout(); scroll.addView(layout)
+        layout.addView(text("При первом нажатии подтвердите «Разрешить» на телевизоре. Токен Samsung хранится только в памяти до закрытия приложения.", 13f, c("#AABBD4"), false))
+        layout.addView(sectionTitle("НАВИГАЦИЯ"))
+        addDpad(layout,
+            { runSamsung(d, host, "KEY_UP") }, { runSamsung(d, host, "KEY_LEFT") }, { runSamsung(d, host, "KEY_ENTER") },
+            { runSamsung(d, host, "KEY_RIGHT") }, { runSamsung(d, host, "KEY_DOWN") }
+        )
+        addRemoteRow(layout,
+            "⌂ Home" to { runSamsung(d, host, "KEY_HOME") },
+            "↩ Back" to { runSamsung(d, host, "KEY_RETURN") },
+            "⏻ Off" to { runSamsung(d, host, "KEY_POWEROFF") }
+        )
+        addRemoteRow(layout,
+            "Vol −" to { runSamsung(d, host, "KEY_VOLDOWN") },
+            "Mute" to { runSamsung(d, host, "KEY_MUTE") },
+            "Vol +" to { runSamsung(d, host, "KEY_VOLUP") }
+        )
+        addRemoteRow(layout,
+            "⏪" to { runSamsung(d, host, "KEY_REWIND") },
+            "▶" to { runSamsung(d, host, "KEY_PLAY") },
+            "Ⅱ" to { runSamsung(d, host, "KEY_PAUSE") }
+        )
+        addRemoteRow(layout,
+            "Source" to { runSamsung(d, host, "KEY_SOURCE") },
+            "Menu" to { runSamsung(d, host, "KEY_MENU") },
+            "Info" to { runSamsung(d, host, "KEY_INFO") }
+        )
+        if (d.macAddress != null) layout.addView(controlRow("⚡ Включить через Wake-on-LAN") { sendWake(d) })
+        AlertDialog.Builder(this).setTitle("Samsung TV • ${d.name}").setView(scroll).setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun runSamsung(d: NearbyDevice, host: String, key: String) {
+        samsung.key(host, key) { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
+    }
+
+    private fun probeAndShowWled(d: NearbyDevice, host: String) {
+        toast("Проверяю WLED API…")
+        wled.probe(host) { result -> runOnUiThread {
+            if (!result.ok) {
+                AlertDialog.Builder(this).setTitle("Свет • ${d.name}")
+                    .setMessage("Устройство похоже на свет/умный дом, но поддерживаемый WLED API не найден. Matter, HomeKit, Tuya и Hue требуют отдельной штатной авторизации; приложение не посылает случайные команды.")
+                    .setPositiveButton("Понятно", null).show()
+                return@runOnUiThread
+            }
+            showWledRemote(d, host, result.message)
+        } }
+    }
+
+    private fun showWledRemote(d: NearbyDevice, host: String, info: String) {
+        val layout = remoteLayout()
+        layout.addView(text(info, 13f, c("#72F1CE"), false))
+        addRemoteRow(layout,
+            "ВКЛ" to { runWled(d) { cb -> wled.power(host, true, cb) } },
+            "ВЫКЛ" to { runWled(d) { cb -> wled.power(host, false, cb) } }
+        )
+        layout.addView(sectionTitle("ЯРКОСТЬ"))
+        addRemoteRow(layout,
+            "25%" to { runWled(d) { cb -> wled.brightness(host, 64, cb) } },
+            "50%" to { runWled(d) { cb -> wled.brightness(host, 128, cb) } },
+            "100%" to { runWled(d) { cb -> wled.brightness(host, 255, cb) } }
+        )
+        layout.addView(sectionTitle("ЦВЕТ"))
+        addRemoteRow(layout,
+            "Красный" to { runWled(d) { cb -> wled.color(host, 255, 0, 0, cb) } },
+            "Зелёный" to { runWled(d) { cb -> wled.color(host, 0, 255, 0, cb) } },
+            "Синий" to { runWled(d) { cb -> wled.color(host, 0, 0, 255, cb) } }
+        )
+        addRemoteRow(layout,
+            "Белый" to { runWled(d) { cb -> wled.color(host, 255, 255, 255, cb) } },
+            "Тёплый" to { runWled(d) { cb -> wled.color(host, 255, 147, 41, cb) } }
+        )
+        AlertDialog.Builder(this).setTitle("WLED • ${d.name}").setView(layout).setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun runWled(d: NearbyDevice, action: (((WledController.Result) -> Unit)) -> Unit) {
+        action { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
+    }
+
+    private fun remoteLayout() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(18), dp(6), dp(18), dp(8))
+    }
+
+    private fun sectionTitle(value: String) = text(value, 11f, c("#65E6C4"), true).apply { setPadding(0, dp(12), 0, dp(5)); letterSpacing = .08f }
+
+    private fun addDpad(layout: LinearLayout, up: () -> Unit, left: () -> Unit, ok: () -> Unit, right: () -> Unit, down: () -> Unit) {
+        addRemoteRow(layout, "" to {}, "▲" to up, "" to {})
+        addRemoteRow(layout, "◀" to left, "OK" to ok, "▶" to right)
+        addRemoteRow(layout, "" to {}, "▼" to down, "" to {})
+    }
+
+    private fun addRemoteRow(layout: LinearLayout, vararg actions: Pair<String, () -> Unit>) {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        actions.forEachIndexed { index, pair ->
+            if (pair.first.isBlank()) {
+                row.addView(View(this), LinearLayout.LayoutParams(0, dp(48), 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) })
+            } else {
+                row.addView(remoteKey(pair.first, pair.second), LinearLayout.LayoutParams(0, dp(48), 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) })
+            }
+        }
+        layout.addView(row)
+    }
+
+    private fun remoteKey(label: String, action: () -> Unit) = Button(this).apply {
+        text = label; isAllCaps = false; textSize = 13f; setTextColor(Color.WHITE)
+        background = rounded(c("#172946"), 12, c("#294466")); setOnClickListener { action() }
+    }
+
+    private fun showPairingInfo(d: NearbyDevice? = null) {
+        val extra = when {
+            d?.brand?.contains("Philips Hue", true) == true || d?.protocol?.contains("hue", true) == true -> "\n\nPhilips Hue требует физического нажатия кнопки Bridge и HTTPS application-key. Этот адаптер пока не выдаёт фальшивые команды без такой авторизации."
+            d?.protocol?.contains("Matter", true) == true || d?.protocol?.contains("HomeKit", true) == true -> "\n\nMatter/HomeKit требуют штатного commissioning/pairing экосистемы."
+            else -> ""
+        }
         AlertDialog.Builder(this).setTitle("Нужна штатная авторизация")
-            .setMessage("Устройство публикует функции управления, но протокол требует PIN, сертификат, pairing-токен или приложение производителя. Поддерживаемые стандартные адаптеры работают только через штатную авторизацию.")
+            .setMessage("Устройство найдено, но управление возможно только через поддерживаемый штатный протокол с PIN, подтверждением на экране или pairing-токеном. Защиту устройства приложение не обходит.$extra")
             .setPositiveButton("Понятно", null).show()
     }
 
@@ -545,6 +849,9 @@ class MainActivity : AppCompatActivity() {
         ControlCapability.VOLUME -> "громкость"
         ControlCapability.MUTE -> "mute"
         ControlCapability.MEDIA -> "медиа"
+        ControlCapability.NAVIGATION -> "навигация"
+        ControlCapability.CHANNEL -> "каналы"
+        ControlCapability.INPUT -> "входы"
         ControlCapability.LIGHT_POWER -> "свет"
         ControlCapability.BRIGHTNESS -> "яркость"
         ControlCapability.COLOR -> "цвет"
@@ -592,7 +899,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        stopScan(); upnp.close(); pjlink.close(); analyzer.close(); wol.close(); healthProbe.close()
+        stopScan(); upnp.close(); pjlink.close(); roku.close(); samsung.close(); wled.close(); androidTv.close(); analyzer.close(); wol.close(); healthProbe.close()
         super.onDestroy()
     }
 }

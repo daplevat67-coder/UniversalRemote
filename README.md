@@ -1,3 +1,21 @@
+# Universal Remote 0.5 — discovery + real local remotes
+
+## Новое в v0.5.0
+
+- Android TV / Google TV Remote Service v2: TLS pairing по 6-значному HEX-коду с экрана, D-pad, Home/Back, питание, громкость, mute, media, settings и input. PIN не сохраняется; после pairing хранится только криптографическая идентичность пульта и SHA-256 fingerprint сертификата TV.
+- Samsung Tizen TV: штатный LAN WebSocket remote на 8002/8001. При первом подключении подтверждение делается на экране телевизора. Токен держится только в памяти процесса.
+- Roku: официальный ECP на 8060 — D-pad, Home/Back, громкость, mute, media, power и HDMI inputs. Перед открытием пульта API проверяется.
+- WLED: локальный JSON API — питание, яркость и базовые RGB-пресеты. Добавлено mDNS-обнаружение `_wled._tcp.`.
+- Сохранены UPnP MediaRenderer, PJLink и Wake-on-LAN.
+- LAN-анализ знает порты Android TV 6466/6467, Samsung 8001/8002, Roku 8060 и PJLink 4352.
+- Повторное обнаружение больше не теряет `controllable`, capabilities, brand и description URL: данные разных discovery-источников объединяются.
+- Неподдерживаемые Hue/Matter/HomeKit/Tuya не получают фальшивых универсальных команд: интерфейс сообщает, что нужна штатная авторизация/адаптер протокола.
+
+## Безопасность управления
+
+Universal Remote не обходит PIN, пароль или подтверждение владельца. Android TV требует код с экрана, Samsung — разрешение на TV, PJLink использует введённый пароль только для текущей команды.
+
+## История v0.4.x
 
 ## v0.4.3 nearby-scan fixes
 

@@ -5,6 +5,9 @@ enum class ControlCapability {
     VOLUME,
     MUTE,
     MEDIA,
+    NAVIGATION,
+    CHANNEL,
+    INPUT,
     LIGHT_POWER,
     BRIGHTNESS,
     COLOR

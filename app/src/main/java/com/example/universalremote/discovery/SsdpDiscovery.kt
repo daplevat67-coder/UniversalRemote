@@ -32,25 +32,39 @@ class SsdpDiscovery(private val onDevice: (NearbyDevice) -> Unit) {
                         val usn = header(text, "USN").orEmpty()
                         val location = header(text, "LOCATION")
                         val address = location ?: packet.address.hostAddress.orEmpty()
-                        val descriptor = "$server $st $usn".lowercase()
+                        val descriptor = "$server $st $usn $location".lowercase()
                         val renderer = "mediarenderer" in descriptor || "renderingcontrol" in descriptor
+                        val roku = "roku" in descriptor
+                        val samsung = "samsung" in descriptor || "tizen" in descriptor
                         val kind = classify(descriptor)
-                        val capabilities = if (renderer) setOf(
-                            ControlCapability.VOLUME,
-                            ControlCapability.MUTE,
-                            ControlCapability.MEDIA
-                        ) else emptySet()
+                        val capabilities = when {
+                            roku || samsung -> setOf(
+                                ControlCapability.POWER, ControlCapability.VOLUME, ControlCapability.MUTE,
+                                ControlCapability.MEDIA, ControlCapability.NAVIGATION, ControlCapability.CHANNEL, ControlCapability.INPUT
+                            )
+                            renderer -> setOf(ControlCapability.VOLUME, ControlCapability.MUTE, ControlCapability.MEDIA)
+                            else -> emptySet()
+                        }
+                        val protocol = when {
+                            roku -> "Roku ECP"
+                            samsung -> "Samsung Tizen WebSocket"
+                            renderer -> "UPnP MediaRenderer"
+                            else -> "SSDP/UPnP"
+                        }
                         val identity = usn.substringBefore("::").ifBlank { address }
+                        val host = packet.address.hostAddress.orEmpty()
                         onDevice(
                             NearbyDevice(
                                 id = "ssdp:$identity",
                                 name = friendlyName(server, kind),
                                 kind = kind,
-                                protocol = if (renderer) "UPnP MediaRenderer" else "SSDP/UPnP",
+                                protocol = protocol,
                                 address = address,
-                                controllable = renderer,
+                                controllable = roku || samsung || renderer,
+                                brand = when { roku -> "Roku"; samsung -> "Samsung"; else -> null },
                                 capabilities = capabilities,
-                                descriptionUrl = location
+                                descriptionUrl = location,
+                                ipAddress = host.takeIf { it.isNotBlank() }
                             )
                         )
                     }
