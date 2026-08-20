@@ -7,13 +7,19 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import com.example.universalremote.model.NearbyDevice
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.pow
 
-class BleDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Unit) {
-    private val scanner = context.getSystemService(BluetoothManager::class.java)?.adapter?.bluetoothLeScanner
+class BleDiscovery(
+    context: Context,
+    private val onDevice: (NearbyDevice) -> Unit,
+    private val onStatus: (String) -> Unit = {}
+) {
+    private val manager = context.getSystemService(BluetoothManager::class.java)
+    private val seen = ConcurrentHashMap.newKeySet<String>()
     private val settings = ScanSettings.Builder()
-        .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
-        .setReportDelay(700L)
+        .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+        .setReportDelay(0L)
         .build()
 
     private val callback = object : ScanCallback() {
@@ -22,6 +28,19 @@ class BleDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Uni
 
         @SuppressLint("MissingPermission")
         override fun onBatchScanResults(results: MutableList<ScanResult>) = results.forEach(::emit)
+
+        override fun onScanFailed(errorCode: Int) {
+            val reason = when (errorCode) {
+                SCAN_FAILED_ALREADY_STARTED -> "сканирование уже запущено"
+                SCAN_FAILED_APPLICATION_REGISTRATION_FAILED -> "ошибка регистрации Bluetooth"
+                SCAN_FAILED_INTERNAL_ERROR -> "внутренняя ошибка Bluetooth"
+                SCAN_FAILED_FEATURE_UNSUPPORTED -> "BLE scan не поддерживается"
+                SCAN_FAILED_OUT_OF_HARDWARE_RESOURCES -> "нет ресурсов Bluetooth-контроллера"
+                SCAN_FAILED_SCANNING_TOO_FREQUENTLY -> "слишком частые BLE-сканы"
+                else -> "ошибка BLE $errorCode"
+            }
+            onStatus(reason)
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -31,7 +50,7 @@ class BleDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Uni
         val label = advertisedName.ifBlank { "BLE ${address.takeLast(5)}" }
         val identity = classify(label)
         val advertisedPower = result.scanRecord?.txPowerLevel?.takeUnless { it == Int.MIN_VALUE } ?: -59
-        // RSSI distance is only an estimate. Do not artificially stop at 99.9 m.
+        // RSSI-derived distance is a rough radio estimate, not a measurement.
         val distance = 10.0.pow((advertisedPower - result.rssi) / 22.0).coerceAtLeast(0.1)
         onDevice(
             NearbyDevice(
@@ -46,13 +65,33 @@ class BleDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Uni
                 brand = identity.second
             )
         )
+        if (seen.add(address)) {
+            val n = seen.size
+            if (n == 1 || n % 10 == 0) onStatus("найдено BLE: $n")
+        }
     }
 
     @SuppressLint("MissingPermission")
-    fun start() = scanner?.startScan(null, settings, callback)
+    fun start() {
+        seen.clear()
+        val adapter = manager?.adapter
+        if (adapter == null) return onStatus("Bluetooth не поддерживается")
+        if (!adapter.isEnabled) return onStatus("Bluetooth выключен")
+        val scanner = adapter.bluetoothLeScanner ?: return onStatus("BLE-сканер недоступен")
+        try {
+            scanner.startScan(null, settings, callback)
+            onStatus("BLE-сканирование запущено")
+        } catch (e: SecurityException) {
+            onStatus("нет разрешения Nearby devices/геолокации")
+        } catch (e: Throwable) {
+            onStatus("BLE: ${e.javaClass.simpleName}")
+        }
+    }
 
     @SuppressLint("MissingPermission")
-    fun stop() = scanner?.stopScan(callback)
+    fun stop() {
+        runCatching { manager?.adapter?.bluetoothLeScanner?.stopScan(callback) }
+    }
 
     private fun classify(name: String): Pair<String, String?> {
         val n = name.lowercase()

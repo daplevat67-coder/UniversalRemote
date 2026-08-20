@@ -32,10 +32,12 @@ import com.example.universalremote.control.PjLinkController
 import com.example.universalremote.control.UpnpController
 import com.example.universalremote.control.WakeOnLanController
 import com.example.universalremote.discovery.BleDiscovery
+import com.example.universalremote.discovery.BluetoothClassicDiscovery
 import com.example.universalremote.discovery.LanDiscovery
 import com.example.universalremote.discovery.NsdDiscovery
 import com.example.universalremote.discovery.PjLinkDiscovery
 import com.example.universalremote.discovery.SsdpDiscovery
+import com.example.universalremote.discovery.WifiDiscovery
 import com.example.universalremote.model.ControlCapability
 import com.example.universalremote.model.NearbyDevice
 import com.example.universalremote.model.ScanConfig
@@ -53,10 +55,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var adapter: DeviceAdapter
     private lateinit var search: EditText
     private lateinit var ble: BleDiscovery
+    private lateinit var classic: BluetoothClassicDiscovery
     private lateinit var nsd: NsdDiscovery
     private lateinit var ssdp: SsdpDiscovery
     private lateinit var lan: LanDiscovery
     private lateinit var pjDiscovery: PjLinkDiscovery
+    private lateinit var wifiDiscovery: WifiDiscovery
     private val upnp = UpnpController()
     private val pjlink = PjLinkController()
     private val analyzer = DeviceAnalyzer()
@@ -67,27 +71,33 @@ class MainActivity : AppCompatActivity() {
     private var query = ""
     private var selectedKinds = mutableSetOf<String>()
     private var onlyControllable = false
+    private val sourceStatus = linkedMapOf<String, String>()
 
     private val prefs by lazy { getSharedPreferences("scan_settings", MODE_PRIVATE) }
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-        if (result.values.any { !it }) toast("Без разрешения Bluetooth часть устройств не будет видна")
+        if (result.values.any { !it }) toast("Без Nearby devices/точной геолокации часть Bluetooth и Wi‑Fi эфира не будет видна")
         startScan()
     }
 
     private val finishScan = Runnable {
         stopSources()
-        hint.text = plural(devices.size) + " • поиск завершён"
+        hint.text = if (devices.isEmpty()) {
+            val diag = sourceStatus.entries.joinToString(" • ") { "${it.key}: ${it.value}" }.take(180)
+            if (diag.isBlank()) "0 устройств • проверьте Bluetooth, Nearby devices, геолокацию и Wi‑Fi" else "0 • $diag"
+        } else plural(devices.size) + " • поиск завершён"
         scanButton.text = "↻  ИСКАТЬ ЕЩЁ"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         supportActionBar?.hide()
-        ble = BleDiscovery(this, ::addDevice)
+        ble = BleDiscovery(this, ::addDevice) { updateSourceStatus("BLE", it) }
+        classic = BluetoothClassicDiscovery(this, ::addDevice) { updateSourceStatus("BT", it) }
         nsd = NsdDiscovery(this, ::addDevice)
         ssdp = SsdpDiscovery(::addDevice)
-        lan = LanDiscovery(this, ::addDevice) { status -> runOnUiThread { hint.text = status } }
+        lan = LanDiscovery(this, ::addDevice) { status -> updateSourceStatus("LAN", status) }
         pjDiscovery = PjLinkDiscovery(this, ::addDevice)
+        wifiDiscovery = WifiDiscovery(this, ::addDevice) { updateSourceStatus("Wi‑Fi", it) }
         adapter = DeviceAdapter(::showDevice)
         setContentView(buildScreen())
     }
@@ -100,7 +110,7 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(text("UNIVERSAL REMOTE • NETWORK LAB", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
         root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
-        root.addView(text("BLE + mDNS + SSDP + LAN + TCP services + PJLink", 13f, c("#AABBD4"), false))
+        root.addView(text("BLE + Classic BT + Wi‑Fi эфир + mDNS + SSDP + LAN + PJLink", 13f, c("#AABBD4"), false))
 
         val radar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -160,8 +170,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun requestAndScan() {
         val needed = when {
-            Build.VERSION.SDK_INT >= 31 -> arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
-            else -> arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+            Build.VERSION.SDK_INT >= 31 -> arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            )
+            else -> arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)
         }
         if (needed.all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) startScan() else permissions.launch(needed)
     }
@@ -169,12 +184,15 @@ class MainActivity : AppCompatActivity() {
     private fun startScan() {
         stopScan()
         devices.clear()
+        sourceStatus.clear()
         adapter.submitList(emptyList())
         count.text = "…"
-        hint.text = "сканируем эфир, LAN и службы"
+        hint.text = "сканируем Bluetooth, Wi‑Fi эфир, LAN и службы"
         scanButton.text = "ПОИСК ИДЁТ…"
         acquireMulticast()
-        if (prefs.getBoolean("ble", true)) runCatching { ble.start() }
+        if (prefs.getBoolean("ble", true)) runCatching { ble.start() }.onFailure { updateSourceStatus("BLE", it.javaClass.simpleName) }
+        if (prefs.getBoolean("classic", true)) runCatching { classic.start() }.onFailure { updateSourceStatus("BT", it.javaClass.simpleName) }
+        if (prefs.getBoolean("wifi_radio", true)) runCatching { wifiDiscovery.start() }.onFailure { updateSourceStatus("Wi‑Fi", it.javaClass.simpleName) }
         if (prefs.getBoolean("mdns", true)) runCatching { nsd.start() }
         if (prefs.getBoolean("ssdp", true)) runCatching { ssdp.start() }
         if (prefs.getBoolean("lan", true)) runCatching { lan.start(loadScanConfig()) }
@@ -190,11 +208,18 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopSources() {
         runCatching { ble.stop() }
+        runCatching { classic.stop() }
+        runCatching { wifiDiscovery.stop() }
         runCatching { nsd.stop() }
         runCatching { ssdp.stop() }
         runCatching { lan.stop() }
         runCatching { pjDiscovery.stop() }
         releaseMulticast()
+    }
+
+    private fun updateSourceStatus(source: String, status: String) = runOnUiThread {
+        sourceStatus[source] = status
+        if (devices.isEmpty()) hint.text = "$source: $status"
     }
 
     private fun addDevice(incoming: NearbyDevice) = runOnUiThread {
@@ -290,6 +315,8 @@ class MainActivity : AppCompatActivity() {
         scroll.addView(box)
         val sources = linkedMapOf(
             "ble" to "Bluetooth LE",
+            "classic" to "Bluetooth Classic (только реально обнаруженные)",
+            "wifi_radio" to "Wi‑Fi эфир / точки доступа (SSID/BSSID)",
             "mdns" to "mDNS / Bonjour",
             "ssdp" to "SSDP / UPnP",
             "lan" to "LAN IPv4 + TCP",
@@ -307,7 +334,7 @@ class MainActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this)
             .setTitle("Настройки сканера")
-            .setMessage("LAN-скан ограничен private/link-local IPv4 и максимум 1024 адресами. Это сохраняет поиск быстрым даже при 100+ устройствах.")
+            .setMessage("Wi‑Fi эфир показывает точки доступа вокруг, а LAN — устройства в подключённой локальной сети. Сохранённые Bluetooth-устройства больше не считаются находящимися рядом.")
             .setView(scroll)
             .setNegativeButton("Отмена", null)
             .setPositiveButton("Сохранить") { _, _ ->

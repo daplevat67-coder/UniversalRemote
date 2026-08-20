@@ -1,3 +1,11 @@
+
+## v0.4.3 nearby-scan fixes
+
+- Wi-Fi radio scan now lists nearby access points (SSID/BSSID/RSSI) separately from LAN clients.
+- Previously paired Bluetooth Classic devices are no longer shown unless they are actually discovered during the current scan.
+- LAN discovery prefers the connected Wi-Fi network instead of accidentally deriving the range from mobile data.
+- Scan-source diagnostics now distinguish Wi-Fi radio results from LAN devices.
+
 # Universal Remote 0.4 — Android Network Lab + Remote
 
 Версия 0.4 расширяет Universal Remote сетевым анализом для устройств в локальной IPv4-сети.
@@ -52,3 +60,12 @@ app/build/outputs/apk/debug/app-debug.apk
 ```
 
 Подробная схема: `ARCHITECTURE_NETWORK_LAB.md`.
+
+
+## v0.4.2 — исправление поиска 0 устройств
+- BLE LOW_LATENCY без batch-delay и с отображением SCAN_FAILED причин.
+- Runtime permissions для Nearby devices + coarse/fine location, так как расстояние оценивается по RSSI.
+- Bluetooth Classic discovery и немедленное отображение уже сопряжённых устройств.
+- LAN neighbor-touch: хост больше не обязан иметь открытый TCP-порт, чтобы быть замеченным.
+- Маршрутизатор/DNS добавляются как известные узлы локальной сети.
+- Диагностика источников показывается вместо молчаливого `0`.

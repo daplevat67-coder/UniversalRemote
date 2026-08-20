@@ -70,7 +70,11 @@ class DeviceAdapter(
         fun bind(device: NearbyDevice) {
             name.text = device.name.take(48)
             icon.setImageResource(iconFor(device.kind))
-            val proximity = device.distanceMeters?.let(::formatDistance) ?: "LAN"
+            val proximity = when {
+                device.distanceMeters != null -> formatDistance(device.distanceMeters)
+                device.protocol.startsWith("Wi‑Fi эфир") && device.signalDbm != null -> "${device.signalDbm} dBm"
+                else -> "LAN"
+            }
             val ip = device.ipAddress?.let { "IP $it" }
             val ports = device.openPorts.takeIf { it.isNotEmpty() }?.let { "${it.size} TCP" }
             val line = listOfNotNull(device.hardwareVendor ?: device.brand, device.protocol, ip, ports, proximity).joinToString(" • ")
