@@ -190,6 +190,7 @@ class LanDiscovery(
         if (protocol == "Сетевая инфраструктура") return "Маршрутизатор / сеть"
         val p = ports.map { it.port }.toSet()
         return when {
+            45123 in p -> "Телефон / планшет (Companion)"
             6466 in p || 6467 in p -> "Телевизор / Android TV"
             3000 in p || 3001 in p || 8001 in p || 8002 in p || 8009 in p || 8060 in p -> "Телевизор / медиаплеер"
             4352 in p -> "Проектор"
@@ -234,7 +235,7 @@ class LanDiscovery(
     companion object {
         private const val MAX_ACTIVE_ADDRESSES = 1024
         private const val MAX_CONFIGURED_RANGE = 65534
-        private val CONTROL_DISCOVERY_PORTS = listOf(6466, 6467, 8060, 8002, 8001, 3001, 3000, 8009, 8008, 55443, 4352)
+        private val CONTROL_DISCOVERY_PORTS = listOf(45123, 6466, 6467, 8060, 8002, 8001, 3001, 3000, 8009, 8008, 55443, 4352)
         // Crucially includes every supported remote endpoint before a host can be discarded.
         private val FAST_GATE_PORTS = CONTROL_DISCOVERY_PORTS + listOf(80, 443, 22, 445, 554, 631, 3389, 9100, 1883)
         private val MOBILE_VENDOR_HINTS = setOf("Apple", "Google", "Xiaomi", "Huawei")

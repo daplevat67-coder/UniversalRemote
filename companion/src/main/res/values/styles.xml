@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.UniversalRemote.Companion" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#07111F</item>
+        <item name="android:navigationBarColor">#07111F</item>
+        <item name="colorPrimary">#72F1CE</item>
+        <item name="colorSecondary">#65E6C4</item>
+    </style>
+</resources>

@@ -1,3 +1,29 @@
+# Universal Remote 0.8.0 — real Android phone control via Companion
+
+## Главное в v0.8.0
+
+- Добавлен второй APK **UniversalRemote Companion** для Android-телефона/планшета, которым вы хотите управлять.
+- Companion рекламирует `_uremote._tcp.` через mDNS, поэтому телефон с установленным Companion становится явно обнаружимым даже когда у обычного Android нет открытых сервисов.
+- Сопряжение выполняется одноразовым 12-символьным кодом с экрана управляемого телефона. PIN/пароль блокировки телефона не используется и не передаётся.
+- Pairing использует challenge-response HMAC; долговременный session key выводится на обеих сторонах и не передаётся по сети. Каждая команда подписывается HMAC, имеет timestamp и nonce против replay.
+- Без Accessibility доступны громкость и media-команды. Home/Back/Recents становятся доступны только после того, как владелец управляемого телефона вручную включил Accessibility для Companion. Сервис настроен без чтения содержимого экрана.
+- Companion принимает только локальные соединения, ограничивает pairing attempts и никогда не обходит lockscreen/PIN.
+- GitHub Actions теперь собирает **два APK**: основной UniversalRemote и UniversalRemote Companion.
+
+## Как управлять вторым Android-телефоном
+
+1. Установите `companion-debug.apk` на телефон, которым хотите управлять.
+2. Откройте Companion и нажмите «Запустить Companion».
+3. На основном телефоне запустите поиск UniversalRemote: появится карточка `Телефон / планшет (Companion)`.
+4. Откройте её, нажмите pairing и введите одноразовый код с экрана второго телефона.
+5. После сопряжения доступны громкость, mute, Play/Pause, Next/Previous. Для Home/Back/Recents вручную включите Accessibility в Companion.
+
+## Что это НЕ делает
+
+Companion не принимает пароль/PIN блокировки телефона, не снимает lockscreen, не делает скрытое управление и не читает содержимое экрана. Для обычного телефона без Companion/штатного ADB pairing универсального безопасного remote API у Android нет.
+
+---
+
 # Universal Remote 0.7.1 — discovery + security hardening
 
 ## Исправлено в v0.7.1

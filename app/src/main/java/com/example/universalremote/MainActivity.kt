@@ -32,6 +32,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.example.universalremote.control.AndroidTvController
 import com.example.universalremote.control.CastV2Controller
+import com.example.universalremote.control.CompanionController
 import com.example.universalremote.control.HueController
 import com.example.universalremote.control.LgWebOsController
 import com.example.universalremote.control.PjLinkController
@@ -81,6 +82,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var samsung: SamsungTvController
     private val wled = WledController()
     private lateinit var cast: CastV2Controller
+    private lateinit var companion: CompanionController
     private val yeelight = YeelightController()
     private lateinit var lgWebOs: LgWebOsController
     private lateinit var hue: HueController
@@ -124,6 +126,7 @@ class MainActivity : AppCompatActivity() {
         lgWebOs = LgWebOsController(this)
         hue = HueController(this)
         cast = CastV2Controller(this)
+        companion = CompanionController(this)
         ble = BleDiscovery(this, ::addDevice) { updateSourceStatus("BLE", it) }
         classic = BluetoothClassicDiscovery(this, ::addDevice) { updateSourceStatus("BT", it) }
         nsd = NsdDiscovery(this, ::addDevice)
@@ -142,9 +145,9 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(26), dp(18), dp(14))
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c("#07111F"), c("#101B35"), c("#132842")))
         }
-        root.addView(text("UNIVERSAL REMOTE • v0.7.1", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+        root.addView(text("UNIVERSAL REMOTE • v0.8.0", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
         root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
-        root.addView(text("Двухфазный LAN-поиск • кандидат ≠ подтверждённый API • Android TV • Samsung • Roku • LG • Cast • Hue • Yeelight • WLED", 13f, c("#AABBD4"), false))
+        root.addView(text("Двухфазный LAN-поиск • Android Companion • API verification • Android TV • Samsung • Roku • LG • Cast • Hue • Yeelight • WLED", 13f, c("#AABBD4"), false))
 
         val radar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -173,7 +176,8 @@ class MainActivity : AppCompatActivity() {
         tools.addView(smallButton("ФИЛЬТРЫ") { showFilters() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(5) })
         tools.addView(smallButton("НАСТРОЙКИ СКАНЕРА") { showSettings() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginStart = dp(5) })
         root.addView(tools)
-        root.addView(smallButton("РУЧНОЙ IP / ПРОВЕРКА УПРАВЛЕНИЯ") { showManualControl() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(8)) })
+        root.addView(smallButton("РУЧНОЙ IP / ПРОВЕРКА УПРАВЛЕНИЯ") { showManualControl() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
+        root.addView(smallButton("📱 КАК УПРАВЛЯТЬ ANDROID-ТЕЛЕФОНОМ") { showCompanionHelp() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(8)) })
 
         search = EditText(this).apply {
             hint = "Поиск: имя, IP, MAC, порт, бренд…"
@@ -300,7 +304,8 @@ class MainActivity : AppCompatActivity() {
         osHint = fresh.osHint ?: old.osHint,
         hostname = fresh.hostname ?: old.hostname,
         analysisNote = fresh.analysisNote ?: old.analysisNote,
-        securityFindings = if (fresh.securityFindings.isNotEmpty()) fresh.securityFindings else old.securityFindings
+        securityFindings = if (fresh.securityFindings.isNotEmpty()) fresh.securityFindings else old.securityFindings,
+        companionId = fresh.companionId ?: old.companionId
     )
 
     private fun mergeNetwork(primary: NearbyDevice, network: NearbyDevice): NearbyDevice = primary.copy(
@@ -312,7 +317,8 @@ class MainActivity : AppCompatActivity() {
         osHint = primary.osHint ?: network.osHint,
         hostname = primary.hostname ?: network.hostname,
         analysisNote = network.analysisNote ?: primary.analysisNote,
-        securityFindings = if (network.securityFindings.isNotEmpty()) network.securityFindings else primary.securityFindings
+        securityFindings = if (network.securityFindings.isNotEmpty()) network.securityFindings else primary.securityFindings,
+        companionId = primary.companionId ?: network.companionId
     )
 
     private fun scheduleRender() {
@@ -532,6 +538,13 @@ class MainActivity : AppCompatActivity() {
     private fun enrichControlFromPorts(d: NearbyDevice): NearbyDevice {
         val ports = d.openPorts.map { it.port }.toSet()
         return when {
+            45123 in ports -> d.copy(
+                kind = "Телефон / планшет (Companion)",
+                protocol = "UniversalRemote Companion v1 (кандидат)",
+                brand = d.brand ?: "UniversalRemote Companion",
+                controllable = true,
+                capabilities = d.capabilities + setOf(ControlCapability.VOLUME, ControlCapability.MUTE, ControlCapability.MEDIA, ControlCapability.NAVIGATION)
+            )
             6466 in ports || 6467 in ports -> d.copy(
                 kind = if (d.kind.contains("Телевизор") || d.kind.contains("ТВ")) d.kind else "Телевизор / Android TV",
                 protocol = "Android TV Remote Service v2 (кандидат до pairing)",
@@ -601,7 +614,8 @@ class MainActivity : AppCompatActivity() {
         d.protocol.contains("Roku", true) || d.protocol.contains("Android TV", true) || d.protocol.contains("Samsung", true) ||
         d.protocol.contains("LG webOS", true) || d.protocol.contains("Google Cast", true) || d.protocol.contains("Hue", true) ||
         d.protocol.contains("Yeelight", true) || d.protocol.contains("UPnP MediaRenderer", true) || d.protocol.contains("PJLink", true) ||
-        d.openPorts.any { it.port in setOf(3000, 3001, 4352, 6466, 6467, 8001, 8002, 8009, 8060, 55443) }
+        d.protocol.contains("UniversalRemote Companion", true) ||
+        d.openPorts.any { it.port in setOf(45123, 3000, 3001, 4352, 6466, 6467, 8001, 8002, 8009, 8060, 55443) }
 
     private fun showRemote(d: NearbyDevice) {
         detectAndOpenRemote(d)
@@ -614,7 +628,7 @@ class MainActivity : AppCompatActivity() {
     private fun detectAndOpenRemote(d: NearbyDevice) {
         val host = d.ipAddress ?: hostOf(d.address) ?: return showPairingInfo(d)
         toast("Проверяю реальные API на $host…")
-        val controlPorts = listOf(80, 443, 3000, 3001, 4352, 6466, 6467, 8001, 8002, 8008, 8009, 8060, 55443)
+        val controlPorts = listOf(80, 443, 3000, 3001, 4352, 6466, 6467, 8001, 8002, 8008, 8009, 8060, 55443, CompanionController.DEFAULT_PORT)
         val cfg = loadScanConfig().copy(
             ports = (controlPorts + d.openPorts.map { it.port }).distinct(),
             connectTimeoutMs = loadScanConfig().connectTimeoutMs.coerceAtLeast(350),
@@ -638,6 +652,22 @@ class MainActivity : AppCompatActivity() {
         val idText = listOf(d.name, d.kind, d.brand.orEmpty(), d.protocol, d.hardwareVendor.orEmpty()).joinToString(" ").lowercase()
 
         // Pairing protocols are selected only from strong discovery evidence / their dedicated ports.
+        if (d.protocol.contains("UniversalRemote Companion", true) || CompanionController.DEFAULT_PORT in ports) {
+            val port = companionPort(d)
+            return companion.probe(host, port) { result -> runOnUiThread {
+                val info = result.info
+                if (result.ok && info != null) {
+                    val current = devices[d.id]
+                    if (current != null) devices[d.id] = current.copy(
+                        controllable = true, verified = companion.isPaired(info.deviceId), companionId = info.deviceId,
+                        kind = "Телефон / планшет (Companion)", protocol = "UniversalRemote Companion v1",
+                        capabilities = current.capabilities + setOf(ControlCapability.VOLUME, ControlCapability.MUTE, ControlCapability.MEDIA, ControlCapability.NAVIGATION)
+                    )
+                    scheduleRender()
+                    showCompanionRemote(d.copy(companionId = info.deviceId, verified = companion.isPaired(info.deviceId)), host, port, info)
+                } else showNoControlFound(d, host, listOf(result.message))
+            } }
+        }
         if ("android tv" in idText || "google tv" in idText || 6466 in ports || 6467 in ports) {
             return runOnUiThread { showAndroidTvRemote(d, host) }
         }
@@ -716,6 +746,14 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle("Управление не подтверждено • ${d.name}").setMessage(msg).setPositiveButton("Понятно", null).show()
     }
 
+    private fun showCompanionHelp() {
+        AlertDialog.Builder(this)
+            .setTitle("Android Companion • v0.8.0")
+            .setMessage("Для управления вторым Android-телефоном установите на него companion-debug.apk из того же GitHub Actions artifact. На втором телефоне откройте Companion → Запустить Companion. Затем здесь запустите поиск, откройте карточку телефона и введите одноразовый 12-символьный код.\n\nГромкость и media работают после pairing. Home/Back/Recents требуют вручную включить Accessibility на управляемом телефоне. PIN/пароль блокировки не используется и не обходится.")
+            .setPositiveButton("Понятно", null)
+            .show()
+    }
+
     private fun showManualControl() {
         val input = EditText(this).apply {
             hint = "IPv4 устройства, например 192.168.1.25"
@@ -745,6 +783,72 @@ class MainActivity : AppCompatActivity() {
                     detectAndOpenRemote(d)
                 }
             }.show()
+    }
+
+    private fun companionPort(d: NearbyDevice): Int = d.address.substringAfterLast(':', "").toIntOrNull()?.takeIf { it in 1..65535 }
+        ?: d.openPorts.firstOrNull { it.port == CompanionController.DEFAULT_PORT }?.port
+        ?: CompanionController.DEFAULT_PORT
+
+    private fun showCompanionRemote(d: NearbyDevice, host: String, port: Int, info: CompanionController.Info) {
+        val scroll = ScrollView(this)
+        val layout = remoteLayout(); scroll.addView(layout)
+        val status = text(
+            if (companion.isPaired(info.deviceId)) "✓ Companion сопряжён • ${info.name}" else "Нужно один раз ввести код с экрана Companion на управляемом телефоне.",
+            13f, if (companion.isPaired(info.deviceId)) c("#72F1CE") else c("#AABBD4"), false
+        ).apply { setPadding(0, 0, 0, dp(8)) }
+        layout.addView(status)
+        val code = EditText(this).apply {
+            hint = "12-символьный код Companion"
+            setSingleLine(true)
+            setTextColor(Color.WHITE)
+            setHintTextColor(c("#7185A3"))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+        }
+        layout.addView(code)
+        layout.addView(controlRow("🔐 Сопрячь этот телефон") {
+            val editable = code.text
+            val useful = editable.count { !it.isWhitespace() }
+            val chars = CharArray(useful)
+            var out = 0
+            for (i in 0 until editable.length) if (!editable[i].isWhitespace()) chars[out++] = editable[i].uppercaseChar()
+            editable.clear()
+            status.text = "Проверяю одноразовый pairing-код…"
+            companion.pair(host, port, info.deviceId, chars) { result -> runOnUiThread {
+                chars.fill('\u0000')
+                status.text = result.message
+                toast(result.message)
+                if (result.ok) markVerified(d.id)
+            } }
+        })
+        layout.addView(sectionTitle("ГРОМКОСТЬ И МЕДИА"))
+        addRemoteRow(layout,
+            "Vol −" to { runCompanion(d, host, port, info.deviceId, "volume_down") },
+            "Mute" to { runCompanion(d, host, port, info.deviceId, "mute") },
+            "Vol +" to { runCompanion(d, host, port, info.deviceId, "volume_up") }
+        )
+        addRemoteRow(layout,
+            "⏮" to { runCompanion(d, host, port, info.deviceId, "media_previous") },
+            "▶/Ⅱ" to { runCompanion(d, host, port, info.deviceId, "media_play_pause") },
+            "⏭" to { runCompanion(d, host, port, info.deviceId, "media_next") }
+        )
+        layout.addView(sectionTitle("СИСТЕМНАЯ НАВИГАЦИЯ"))
+        layout.addView(text(
+            if (info.accessibility) "Accessibility Companion включён: Home/Back/Recents доступны." else "Home/Back/Recents требуют вручную включить Accessibility на управляемом телефоне. Companion не читает экран.",
+            12f, if (info.accessibility) c("#72F1CE") else c("#AABBD4"), false
+        ))
+        addRemoteRow(layout,
+            "⌂ Home" to { runCompanion(d, host, port, info.deviceId, "home") },
+            "↩ Back" to { runCompanion(d, host, port, info.deviceId, "back") },
+            "▣ Recents" to { runCompanion(d, host, port, info.deviceId, "recents") }
+        )
+        if (companion.isPaired(info.deviceId)) layout.addView(controlRow("Забыть pairing этого телефона") {
+            companion.forget(info.deviceId); status.text = "Pairing удалён. На Companion потребуется новый код."; toast("Pairing удалён")
+        })
+        AlertDialog.Builder(this).setTitle("Android Companion • ${info.name}").setView(scroll).setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun runCompanion(d: NearbyDevice, host: String, port: Int, deviceId: String, action: String) {
+        companion.command(host, port, deviceId, action) { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
     }
 
     private fun showAndroidTvRemote(d: NearbyDevice, host: String) {

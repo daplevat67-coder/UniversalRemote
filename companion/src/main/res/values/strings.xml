@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">UniversalRemote Companion</string>
+    <string name="accessibility_desc">Разрешает только явные команды Home, Back и Recents от уже сопряжённого UniversalRemote. Содержимое экрана не читается.</string>
+</resources>

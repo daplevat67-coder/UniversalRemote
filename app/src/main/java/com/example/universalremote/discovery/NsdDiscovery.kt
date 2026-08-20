@@ -16,7 +16,7 @@ class NsdDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Uni
     private var stopped = true
 
     private val serviceTypes = listOf(
-        "_googlecast._tcp.", "_airplay._tcp.", "_raop._tcp.",
+        "_uremote._tcp.", "_googlecast._tcp.", "_airplay._tcp.", "_raop._tcp.",
         "_androidtvremote2._tcp.", "_webos._tcp.", "_lge-app-remote._tcp.",
         "_companion-link._tcp.", "_adb-tls-connect._tcp.", "_adb-tls-pairing._tcp.",
         "_hap._tcp.", "_matter._tcp.", "_matterc._udp.", "_matterd._udp.",
@@ -80,6 +80,7 @@ class NsdDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Uni
         val location = attrs["location"]?.toString(Charsets.UTF_8)?.takeIf { it.startsWith("http") }
         val typeLower = s.serviceType.lowercase()
         val nameLower = s.serviceName.lowercase()
+        val companion = "_uremote" in typeLower
         val sonos = "sonos" in typeLower
         val androidTv = "androidtvremote2" in typeLower
         val androidPhone = "adb-tls-connect" in typeLower || "adb-tls-pairing" in typeLower
@@ -89,7 +90,9 @@ class NsdDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Uni
         val cast = "googlecast" in typeLower
         val hue = "philipshue" in typeLower || "_hue" in typeLower || "hue bridge" in nameLower
         val webos = "webos" in typeLower || "lge-app-remote" in typeLower || ("lg" in nameLower && "tv" in nameLower)
+        val companionId = attrs["id"]?.toString(Charsets.UTF_8)?.take(80)
         val protocol = when {
+            companion -> "UniversalRemote Companion v1"
             androidTv -> "Android TV Remote Service v2"
             androidPhone -> "Android mDNS / ADB TLS advertisement"
             appleCompanion -> "Apple Companion Link mDNS"
@@ -108,11 +111,12 @@ class NsdDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Uni
                 kind = info.first,
                 protocol = protocol,
                 address = "$host:${s.port}",
-                controllable = androidTv || roku || wled || cast || hue || webos || (sonos && location != null),
+                controllable = companion || androidTv || roku || wled || cast || hue || webos || (sonos && location != null),
                 brand = info.second,
                 capabilities = info.third,
                 descriptionUrl = location,
-                ipAddress = host
+                ipAddress = host,
+                companionId = companionId
             )
         )
     }
@@ -131,6 +135,7 @@ class NsdDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Uni
         val t = type.lowercase()
         val n = name.lowercase()
         return when {
+            "_uremote" in t -> Triple("Телефон / планшет (Companion)", "UniversalRemote Companion", setOf(ControlCapability.VOLUME, ControlCapability.MUTE, ControlCapability.MEDIA, ControlCapability.NAVIGATION))
             "adb-tls" in t -> Triple("Телефон / планшет (Android)", "Android", emptySet())
             "companion-link" in t -> Triple("Телефон / планшет / Apple устройство", "Apple", emptySet())
             "androidtv" in t -> Triple("Телевизор / Android TV", "Android TV", tvCaps())

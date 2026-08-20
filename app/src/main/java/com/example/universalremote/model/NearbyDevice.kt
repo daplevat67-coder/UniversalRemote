@@ -20,5 +20,6 @@ data class NearbyDevice(
     val osHint: String? = null,
     val hostname: String? = null,
     val analysisNote: String? = null,
-    val securityFindings: List<String> = emptyList()
+    val securityFindings: List<String> = emptyList(),
+    val companionId: String? = null
 )
