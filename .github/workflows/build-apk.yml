@@ -21,5 +21,5 @@ jobs:
         run: gradle :app:assembleDebug
       - uses: actions/upload-artifact@v4
         with:
-          name: Nearby-debug-apk
+          name: UniversalRemote-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
