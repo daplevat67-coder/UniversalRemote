@@ -1,3 +1,32 @@
+# Universal Remote 0.8.1 — hardening Companion, discovery boundaries and first-use TLS
+
+## Главное в v0.8.1
+
+- Companion pairing-код теперь действует **5 минут**; challenge имеет отдельный короткий TTL.
+- Companion session живёт максимум **30 дней** и может быть отозвана на управляемом телефоне: по одному пульту или кнопкой **«Отозвать все»**. Основной пульт при «Отозвать pairing» сначала отзывает ключ на Companion, затем удаляет локальную копию.
+- Companion server вынес accept-loop в отдельный thread, использует bounded worker queue/backlog и общий deadline запроса. Медленные/массовые LAN-подключения больше не накапливаются в бесконечной очереди.
+- Companion привязывается к текущему Wi-Fi IPv4-интерфейсу и принимает только peers из того же link-prefix; RFC1918 адрес через VPN/другой private interface больше сам по себе не считается доверенным LAN.
+- Команды Companion v2 шифруются **AES-GCM** ключом, выведенным из pairing session key, и дополнительно подписываются HMAC с timestamp + nonce. HTTP transport остаётся локальным legacy transport, но action payload больше не виден пассивному наблюдателю LAN.
+- Стабильный Companion deviceId больше не рекламируется через mDNS: до успешного proof используется ephemeral advertisementId; stable ID выдаётся только после корректного pairing proof.
+- `ResponseBody.string().take(...)` заменён на bounded stream-read; Yeelight и PJLink больше не используют неограниченный `readLine()`.
+- Yeelight `Location:` обязан указывать на IP фактического UDP sender; mDNS TXT `location` и UPnP descriptor/control URL жёстко привязаны к IP исходного discovery record.
+- DeviceAnalyzer и ServiceHealthProbe отказываются работать вне **текущей Wi-Fi подсети**. Опция «Сканировать TCP-порты» теперь действительно отключает подробный 64-port анализ.
+- mDNS service discovery запускается staggered, resolve остаётся сериализованным, а ошибки start/resolve больше не игнорируются молча.
+- Samsung/LG/Hue/Cast больше не делают silent first-use TOFU: unknown TLS certificate не допускается в credentialed session. Сначала выполняется отдельный TLS handshake без token/client-key/application-key, показывается SHA-256 fingerprint и требуется явное подтверждение пользователя; только после этого сертификат pin’ится.
+- LG registration теперь сообщает версию `0.8.1`.
+- Карточки одного IPv4, найденные несколькими network protocols, объединяются агрессивнее, чтобы уменьшить protocol+protocol дубли.
+- CI теперь запускает Android Lint + unit tests перед сборкой. Debug APK остаются для разработки; если настроены приватные GitHub Secrets для keystore, workflow дополнительно собирает подписанные release APK.
+
+### Важное ограничение первого TLS-доверия
+
+Явное подтверждение fingerprint **не превращает self-signed протокол производителя в PKI**. Если Samsung/LG/Hue/Cast не показывают тот же fingerprint в независимом доверенном интерфейсе, пользователь не может криптографически доказать, что первое наблюдение не прошло через уже активный MITM. v0.8.1 закрывает silent trust и не отправляет credentials до pin, но это всё ещё честно обозначенный TOFU bootstrap.
+
+### Signed release в GitHub Actions
+
+Для стабильных обновлений поверх установленного release APK добавьте repository secrets: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_PASSWORD`. Keystore должен оставаться приватным. Если secrets не настроены, workflow собирает только debug APK; приватный signing key **не хранится в репозитории**.
+
+---
+
 # Universal Remote 0.8.0 — real Android phone control via Companion
 
 ## Главное в v0.8.0

@@ -1,5 +1,6 @@
 package com.example.universalremote.network
 
+import android.content.Context
 import com.example.universalremote.model.NearbyDevice
 import com.example.universalremote.model.PortService
 import com.example.universalremote.model.ScanConfig
@@ -8,24 +9,26 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 
-class DeviceAnalyzer {
+class DeviceAnalyzer(context: Context) {
+    private val appContext = context.applicationContext
     private val executor = Executors.newFixedThreadPool(3)
 
     fun analyze(device: NearbyDevice, config: ScanConfig, callback: (NearbyDevice) -> Unit) {
         val host = device.ipAddress ?: hostFrom(device.address) ?: return callback(device.copy(analysisNote = "IPv4-адрес не определён"))
+        if (!LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) {
+            return callback(device.copy(analysisNote = "Сетевой анализ заблокирован: адрес вне текущей Wi-Fi подсети"))
+        }
         executor.execute {
-            val portPool = Executors.newFixedThreadPool(config.parallelism.coerceIn(4, 32))
-            val futures = mutableListOf<Future<PortService?>>()
-            config.ports.distinct().take(64).forEach { port ->
-                futures += portPool.submit<PortService?> { TcpProbe.inspect(host, port, config.connectTimeoutMs, config.bannerTimeoutMs) }
-            }
-            portPool.shutdown()
-            portPool.awaitTermination((config.connectTimeoutMs + config.bannerTimeoutMs + 2000L), TimeUnit.MILLISECONDS)
-            val ports = futures.mapNotNull { runCatching { it.get(50, TimeUnit.MILLISECONDS) }.getOrNull() }.sortedBy { it.port }
+            val ports = if (config.scanPorts) scanPorts(host, config) else device.openPorts.sortedBy { it.port }
             val mac = device.macAddress ?: NeighborResolver.macFor(host)
             val vendor = device.hardwareVendor ?: MacVendorResolver.resolve(mac)
             val hostname = reverseName(host)
             val os = inferOs(ports, device)
+            val note = when {
+                !config.scanPorts -> "TCP-сканирование выключено в настройках; использованы только уже известные службы"
+                ports.isEmpty() -> "TCP-порты из выбранного набора не ответили"
+                else -> "Проверено ${config.ports.distinct().take(64).size} TCP-портов"
+            }
             callback(
                 device.copy(
                     ipAddress = host,
@@ -34,11 +37,22 @@ class DeviceAnalyzer {
                     openPorts = ports,
                     hostname = hostname,
                     osHint = os,
-                    analysisNote = if (ports.isEmpty()) "TCP-порты из выбранного набора не ответили" else "Проверено ${config.ports.distinct().take(64).size} TCP-портов",
+                    analysisNote = note,
                     securityFindings = securityFindings(ports)
                 )
             )
         }
+    }
+
+    private fun scanPorts(host: String, config: ScanConfig): List<PortService> {
+        val portPool = Executors.newFixedThreadPool(config.parallelism.coerceIn(4, 32))
+        val futures = mutableListOf<Future<PortService?>>()
+        config.ports.distinct().take(64).forEach { port ->
+            futures += portPool.submit<PortService?> { TcpProbe.inspect(host, port, config.connectTimeoutMs, config.bannerTimeoutMs) }
+        }
+        portPool.shutdown()
+        portPool.awaitTermination((config.connectTimeoutMs + config.bannerTimeoutMs + 2000L), TimeUnit.MILLISECONDS)
+        return futures.mapNotNull { runCatching { it.get(50, TimeUnit.MILLISECONDS) }.getOrNull() }.sortedBy { it.port }
     }
 
     fun close() = executor.shutdownNow()
@@ -64,7 +78,6 @@ class DeviceAnalyzer {
                 else -> null
             }
         }
-
 
         fun securityFindings(ports: List<PortService>): List<String> {
             val p = ports.map { it.port }.toSet()

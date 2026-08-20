@@ -1,5 +1,6 @@
 package com.example.universalremote.control
 
+import com.example.universalremote.network.BoundedIo
 import com.example.universalremote.network.LocalEndpointPolicy
 import org.json.JSONArray
 import org.json.JSONObject
@@ -42,8 +43,7 @@ class YeelightController {
                         .toString() + "\r\n"
                     socket.getOutputStream().write(request.toByteArray(Charsets.UTF_8))
                     socket.getOutputStream().flush()
-                    val line = socket.getInputStream().bufferedReader(Charsets.UTF_8).readLine().orEmpty()
-                    require(line.length <= 64 * 1024) { "Yeelight: слишком большой ответ" }
+                    val line = BoundedIo.readAsciiLine(socket.getInputStream(), 64 * 1024).orEmpty()
                     val json = JSONObject(line)
                     if (json.has("error")) {
                         val msg = json.optJSONObject("error")?.optString("message").orEmpty().ifBlank { "Yeelight вернул ошибку" }

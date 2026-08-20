@@ -12,6 +12,7 @@ import okhttp3.WebSocketListener
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -22,8 +23,20 @@ class LgWebOsController(context: Context) {
     private val secrets = SecureStore(context, "lg_webos_keys")
     private val tofu = TofuTls(secrets, "lg")
     private val clients = ConcurrentHashMap<String, OkHttpClient>()
+    private val executor = Executors.newFixedThreadPool(2)
 
     fun isPaired(host: String): Boolean = tofu.isPinned(host) && !secrets.getString(keyName(host)).isNullOrBlank()
+    fun isTlsTrusted(host: String): Boolean = tofu.isPinned(host)
+    fun inspectTls(host: String, callback: (Result, String?) -> Unit) = executor.execute {
+        val pair = runCatching {
+            require(LocalEndpointPolicy.isPrivateIpv4(host)) { "LG: адрес вне private LAN" }
+            Result(true, "LG TLS fingerprint получен") to tofu.inspectFingerprint(host, 3001)
+        }.getOrElse { Result(false, "LG TLS: ${it.message ?: it.javaClass.simpleName}") to null }
+        callback(pair.first, pair.second)
+    }
+    fun approveTls(host: String, fingerprint: String): Result = runCatching {
+        tofu.approve(host, fingerprint); Result(true, "LG TLS-сертификат закреплён")
+    }.getOrElse { Result(false, "LG TLS: ${it.message}") }
     fun forget(host: String) {
         secrets.remove(keyName(host))
         tofu.forget(host)
@@ -153,7 +166,7 @@ class LgWebOsController(context: Context) {
         ))
         val manifest = JSONObject()
             .put("manifestVersion", 1)
-            .put("appVersion", "0.7.1")
+            .put("appVersion", "0.8.1")
             .put("signed", JSONObject().put("created", "2026-08-20").put("appId", "com.example.universalremote").put("vendorId", "com.example.universalremote").put("localizedAppNames", JSONObject().put("", "Universal Remote")).put("localizedVendorNames", JSONObject().put("", "Universal Remote")).put("permissions", permissions).put("serial", "1"))
             .put("permissions", permissions)
         val payload = JSONObject().put("forcePairing", false).put("pairingType", "PROMPT").put("manifest", manifest)
@@ -173,7 +186,7 @@ class LgWebOsController(context: Context) {
             .connectTimeout(3, TimeUnit.SECONDS)
             .readTimeout(8, TimeUnit.SECONDS)
             .sslSocketFactory(ssl.socketFactory, trust)
-            .hostnameVerifier { _, _ -> true }
+            .hostnameVerifier { _, session -> tofu.verifyPinnedSession(host, session) }
             .build()
     }
 
@@ -184,6 +197,7 @@ class LgWebOsController(context: Context) {
 
     private fun keyName(host: String) = "client_key_$host"
     fun close() {
+        executor.shutdownNow()
         clients.values.forEach { it.closeResources() }
         clients.clear()
     }

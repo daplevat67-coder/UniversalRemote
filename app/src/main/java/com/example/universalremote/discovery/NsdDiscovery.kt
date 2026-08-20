@@ -3,17 +3,26 @@ package com.example.universalremote.discovery
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.os.Handler
+import android.os.Looper
 import com.example.universalremote.model.ControlCapability
 import com.example.universalremote.model.NearbyDevice
+import com.example.universalremote.network.LocalEndpointPolicy
 import java.util.ArrayDeque
 
-/** mDNS discovery with a serialized resolve queue (Android NSD is fragile under many concurrent resolveService calls). */
-class NsdDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Unit) {
+/** mDNS discovery with staggered service starts and a serialized resolve queue. */
+class NsdDiscovery(
+    context: Context,
+    private val onDevice: (NearbyDevice) -> Unit,
+    private val onDiagnostic: (String) -> Unit = {}
+) {
     private val manager = context.getSystemService(NsdManager::class.java)
+    private val handler = Handler(Looper.getMainLooper())
     private val listeners = mutableListOf<NsdManager.DiscoveryListener>()
     private val resolveQueue = ArrayDeque<NsdServiceInfo>()
     private var resolving = false
     private var stopped = true
+    private var generation = 0
 
     private val serviceTypes = listOf(
         "_uremote._tcp.", "_googlecast._tcp.", "_airplay._tcp.", "_raop._tcp.",
@@ -28,18 +37,31 @@ class NsdDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Uni
     fun start() {
         stop()
         stopped = false
-        serviceTypes.forEach { type ->
-            val listener = object : NsdManager.DiscoveryListener {
-                override fun onDiscoveryStarted(t: String) = Unit
-                override fun onDiscoveryStopped(t: String) = Unit
-                override fun onStartDiscoveryFailed(t: String, e: Int) = Unit
-                override fun onStopDiscoveryFailed(t: String, e: Int) = Unit
-                override fun onServiceLost(s: NsdServiceInfo) = Unit
-                override fun onServiceFound(service: NsdServiceInfo) = enqueueResolve(service)
-            }
-            listeners += listener
-            runCatching { manager.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, listener) }
+        val run = ++generation
+        serviceTypes.forEachIndexed { index, type ->
+            handler.postDelayed({
+                if (!stopped && generation == run) startType(type)
+            }, index * START_STAGGER_MS)
         }
+    }
+
+    private fun startType(type: String) {
+        val listener = object : NsdManager.DiscoveryListener {
+            override fun onDiscoveryStarted(t: String) = Unit
+            override fun onDiscoveryStopped(t: String) = Unit
+            override fun onStartDiscoveryFailed(t: String, e: Int) {
+                onDiagnostic("mDNS $t: start error $e")
+                runCatching { manager.stopServiceDiscovery(this) }
+            }
+            override fun onStopDiscoveryFailed(t: String, e: Int) {
+                onDiagnostic("mDNS $t: stop error $e")
+            }
+            override fun onServiceLost(s: NsdServiceInfo) = Unit
+            override fun onServiceFound(service: NsdServiceInfo) = enqueueResolve(service)
+        }
+        listeners += listener
+        runCatching { manager.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, listener) }
+            .onFailure { onDiagnostic("mDNS $type: ${it.javaClass.simpleName}") }
     }
 
     @Synchronized
@@ -52,19 +74,27 @@ class NsdDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Uni
 
     @Synchronized
     private fun resolveNext() {
-        if (stopped || resolving) return
-        if (resolveQueue.isEmpty()) return
+        if (stopped || resolving || resolveQueue.isEmpty()) return
         val service = resolveQueue.removeFirst()
         resolving = true
         @Suppress("DEPRECATION")
-        manager.resolveService(service, object : NsdManager.ResolveListener {
-            override fun onResolveFailed(s: NsdServiceInfo, e: Int) = finishResolve()
-            @Suppress("DEPRECATION")
-            override fun onServiceResolved(s: NsdServiceInfo) {
-                runCatching { handleResolved(s) }
-                finishResolve()
-            }
-        })
+        runCatching {
+            manager.resolveService(service, object : NsdManager.ResolveListener {
+                override fun onResolveFailed(s: NsdServiceInfo, e: Int) {
+                    onDiagnostic("mDNS resolve ${s.serviceName}: $e")
+                    finishResolve()
+                }
+                @Suppress("DEPRECATION")
+                override fun onServiceResolved(s: NsdServiceInfo) {
+                    runCatching { handleResolved(s) }
+                        .onFailure { onDiagnostic("mDNS ${s.serviceName}: ${it.javaClass.simpleName}") }
+                    finishResolve()
+                }
+            })
+        }.onFailure {
+            onDiagnostic("mDNS resolve start: ${it.javaClass.simpleName}")
+            finishResolve()
+        }
     }
 
     @Synchronized
@@ -75,9 +105,15 @@ class NsdDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Uni
 
     private fun handleResolved(s: NsdServiceInfo) {
         val host = s.host?.hostAddress ?: return
+        if (!LocalEndpointPolicy.isPrivateIpv4(host)) return
         val info = classify(s.serviceType, s.serviceName)
         val attrs = runCatching { s.attributes }.getOrNull().orEmpty()
-        val location = attrs["location"]?.toString(Charsets.UTF_8)?.takeIf { it.startsWith("http") }
+        val advertisedLocation = attrs["location"]?.toString(Charsets.UTF_8)?.takeIf { it.startsWith("http", true) }
+        val location = advertisedLocation?.takeIf {
+            LocalEndpointPolicy.samePrivateHost(host, it, setOf("http", "https"))
+        }
+        if (advertisedLocation != null && location == null) onDiagnostic("mDNS ${s.serviceName}: внешний location отклонён")
+
         val typeLower = s.serviceType.lowercase()
         val nameLower = s.serviceName.lowercase()
         val companion = "_uremote" in typeLower
@@ -92,7 +128,7 @@ class NsdDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Uni
         val webos = "webos" in typeLower || "lge-app-remote" in typeLower || ("lg" in nameLower && "tv" in nameLower)
         val companionId = attrs["id"]?.toString(Charsets.UTF_8)?.take(80)
         val protocol = when {
-            companion -> "UniversalRemote Companion v1"
+            companion -> "UniversalRemote Companion v2"
             androidTv -> "Android TV Remote Service v2"
             androidPhone -> "Android mDNS / ADB TLS advertisement"
             appleCompanion -> "Apple Companion Link mDNS"
@@ -123,6 +159,8 @@ class NsdDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Uni
 
     fun stop() {
         stopped = true
+        generation++
+        handler.removeCallbacksAndMessages(null)
         listeners.forEach { runCatching { manager.stopServiceDiscovery(it) } }
         listeners.clear()
         synchronized(this) {
@@ -164,4 +202,8 @@ class NsdDiscovery(context: Context, private val onDevice: (NearbyDevice) -> Uni
     )
 
     private fun lightCaps() = setOf(ControlCapability.LIGHT_POWER, ControlCapability.BRIGHTNESS, ControlCapability.COLOR)
+
+    companion object {
+        private const val START_STAGGER_MS = 120L
+    }
 }

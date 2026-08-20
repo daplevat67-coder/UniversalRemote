@@ -1,15 +1,20 @@
 package com.example.universalremote.network
 
+import android.content.Context
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.Executors
 
-class ServiceHealthProbe {
+class ServiceHealthProbe(context: Context) {
     data class Result(val attempts: Int, val successes: Int, val averageMs: Long?, val summary: String)
+    private val appContext = context.applicationContext
     private val executor = Executors.newSingleThreadExecutor()
 
     /** Low-rate availability probe: a few normal TCP connects, never malformed payloads or flooding. */
     fun check(host: String, port: Int, timeoutMs: Int, callback: (Result) -> Unit) {
+        if (!LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) {
+            return callback(Result(0, 0, null, "Проверка заблокирована: $host вне текущей Wi-Fi подсети"))
+        }
         executor.execute {
             val samples = mutableListOf<Long>()
             repeat(3) {

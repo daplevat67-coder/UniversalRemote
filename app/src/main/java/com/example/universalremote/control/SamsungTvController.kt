@@ -28,6 +28,18 @@ class SamsungTvController(context: Context) {
     private val clients = ConcurrentHashMap<String, OkHttpClient>()
 
     fun isPaired(host: String): Boolean = tofu.isPinned(host) && !secrets.getString(tokenKey(host)).isNullOrBlank()
+    fun isTlsTrusted(host: String): Boolean = tofu.isPinned(host)
+    fun inspectTls(host: String, callback: (Result, String?) -> Unit) = executor.execute {
+        val result = runCatching {
+            require(LocalEndpointPolicy.isPrivateIpv4(host)) { "Samsung: адрес вне private LAN" }
+            val fp = tofu.inspectFingerprint(host, 8002)
+            Result(true, "Samsung TLS fingerprint получен") to fp
+        }.getOrElse { Result(false, "Samsung TLS: ${it.message ?: it.javaClass.simpleName}") to null }
+        callback(result.first, result.second)
+    }
+    fun approveTls(host: String, fingerprint: String): Result = runCatching {
+        tofu.approve(host, fingerprint); Result(true, "Samsung TLS-сертификат закреплён")
+    }.getOrElse { Result(false, "Samsung TLS: ${it.message}") }
 
     fun forget(host: String) {
         secrets.remove(tokenKey(host))
@@ -145,7 +157,7 @@ class SamsungTvController(context: Context) {
         OkHttpClient.Builder()
             .sslSocketFactory(ssl.socketFactory, trust)
             // Samsung appliances often use self-signed certificates without an IP SAN; authenticity is TOFU-pinned above.
-            .hostnameVerifier { _, _ -> true }
+            .hostnameVerifier { _, session -> tofu.verifyPinnedSession(host, session) }
             .connectTimeout(2200, TimeUnit.MILLISECONDS)
             .readTimeout(8, TimeUnit.SECONDS)
             .build()

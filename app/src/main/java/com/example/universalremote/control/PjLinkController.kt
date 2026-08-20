@@ -1,8 +1,7 @@
 package com.example.universalremote.control
 
+import com.example.universalremote.network.BoundedIo
 import com.example.universalremote.network.LocalEndpointPolicy
-import java.io.BufferedReader
-import java.io.InputStreamReader
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.MessageDigest
@@ -17,8 +16,7 @@ class PjLinkController {
     fun probe(host: String, callback: (Result) -> Unit) = executor.execute {
         val result = runCatching {
             connect(host).use { socket ->
-                val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.US_ASCII))
-                val greeting = reader.readLine().orEmpty()
+                val greeting = BoundedIo.readAsciiLine(socket.getInputStream(), MAX_LINE).orEmpty()
                 if (!greeting.startsWith("PJLINK ")) error("Ответ не похож на PJLink")
                 Result(true, if (greeting.startsWith("PJLINK 1")) "PJLink доступен • требуется пароль" else "PJLink доступен")
             }
@@ -58,16 +56,16 @@ class PjLinkController {
         require(LocalEndpointPolicy.isPrivateIpv4(host)) { "PJLink: разрешены только private LAN IPv4" }
         val socket = connect(host)
         socket.use {
-            val reader = BufferedReader(InputStreamReader(it.getInputStream(), Charsets.US_ASCII))
-            val greeting = reader.readLine().orEmpty()
+            val input = it.getInputStream()
+            val greeting = BoundedIo.readAsciiLine(input, MAX_LINE).orEmpty()
             when {
-                greeting.startsWith("PJLINK 0") -> return sendAndRead(it, reader, command)
+                greeting.startsWith("PJLINK 0") -> return sendAndRead(it, input, command)
                 greeting.startsWith("PJLINK 1 ") -> {
                     val supplied = password ?: error("Проектор требует пароль PJLink")
                     // PJLink 2.10: ask whether SHA-256 security is supported.
                     it.getOutputStream().write("PJLINK 2\r".toByteArray(Charsets.US_ASCII))
                     it.getOutputStream().flush()
-                    val securityReply = runCatching { reader.readLine().orEmpty() }.getOrDefault("")
+                    val securityReply = runCatching { BoundedIo.readAsciiLine(input, MAX_LINE).orEmpty() }.getOrDefault("")
                     if (securityReply.startsWith("PJLINK 2 ") && securityReply.substringAfter("PJLINK 2 ").trim().length == 32) {
                         val projectorRandomHex = securityReply.substringAfter("PJLINK 2 ").trim()
                         val projectorRandom = hexToBytes(projectorRandomHex)
@@ -76,7 +74,7 @@ class PjLinkController {
                         val xorHex = xor.toHex()
                         val hashHex = digestWithPassword("SHA-256", xorHex, supplied)
                         val payload = controllerRandom.toHex() + hashHex + command
-                        return sendAndRead(it, reader, payload)
+                        return sendAndRead(it, input, payload)
                     }
                 }
                 else -> error("Это не PJLink-устройство")
@@ -88,15 +86,15 @@ class PjLinkController {
 
     private fun executeLegacy(host: String, command: String, password: CharArray?): String {
         connect(host).use { socket ->
-            val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.US_ASCII))
-            val greeting = reader.readLine().orEmpty()
+            val input = socket.getInputStream()
+            val greeting = BoundedIo.readAsciiLine(input, MAX_LINE).orEmpty()
             return when {
-                greeting.startsWith("PJLINK 0") -> sendAndRead(socket, reader, command)
+                greeting.startsWith("PJLINK 0") -> sendAndRead(socket, input, command)
                 greeting.startsWith("PJLINK 1 ") -> {
                     val challenge = greeting.substringAfter("PJLINK 1 ").trim()
                     val supplied = password ?: error("Проектор требует пароль PJLink")
                     val prefix = digestWithPassword("MD5", challenge, supplied)
-                    sendAndRead(socket, reader, prefix + command)
+                    sendAndRead(socket, input, prefix + command)
                 }
                 else -> error("PJLink не отвечает")
             }
@@ -111,10 +109,10 @@ class PjLinkController {
         }
     }
 
-    private fun sendAndRead(socket: Socket, reader: BufferedReader, payload: String): String {
+    private fun sendAndRead(socket: Socket, input: java.io.InputStream, payload: String): String {
         socket.getOutputStream().write(payload.toByteArray(Charsets.US_ASCII))
         socket.getOutputStream().flush()
-        return reader.readLine().orEmpty()
+        return BoundedIo.readAsciiLine(input, MAX_LINE).orEmpty()
     }
 
     private fun digestWithPassword(algorithm: String, prefix: String, password: CharArray): String {
@@ -135,4 +133,8 @@ class PjLinkController {
     }
 
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+    companion object {
+        private const val MAX_LINE = 8 * 1024
+    }
 }

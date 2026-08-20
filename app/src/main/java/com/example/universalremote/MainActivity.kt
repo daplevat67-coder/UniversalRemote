@@ -87,9 +87,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var lgWebOs: LgWebOsController
     private lateinit var hue: HueController
     private lateinit var androidTv: AndroidTvController
-    private val analyzer = DeviceAnalyzer()
+    private lateinit var analyzer: DeviceAnalyzer
     private val wol = WakeOnLanController()
-    private val healthProbe = ServiceHealthProbe()
+    private lateinit var healthProbe: ServiceHealthProbe
     private var multicastLock: WifiManager.MulticastLock? = null
     private var renderPending = false
     private var query = ""
@@ -127,9 +127,11 @@ class MainActivity : AppCompatActivity() {
         hue = HueController(this)
         cast = CastV2Controller(this)
         companion = CompanionController(this)
+        analyzer = DeviceAnalyzer(this)
+        healthProbe = ServiceHealthProbe(this)
         ble = BleDiscovery(this, ::addDevice) { updateSourceStatus("BLE", it) }
         classic = BluetoothClassicDiscovery(this, ::addDevice) { updateSourceStatus("BT", it) }
-        nsd = NsdDiscovery(this, ::addDevice)
+        nsd = NsdDiscovery(this, ::addDevice) { updateSourceStatus("mDNS", it) }
         ssdp = SsdpDiscovery(::addDevice)
         lan = LanDiscovery(this, ::addDevice) { status -> updateSourceStatus("LAN", status) }
         pjDiscovery = PjLinkDiscovery(this, ::addDevice)
@@ -145,7 +147,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(26), dp(18), dp(14))
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c("#07111F"), c("#101B35"), c("#132842")))
         }
-        root.addView(text("UNIVERSAL REMOTE • v0.8.0", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+        root.addView(text("UNIVERSAL REMOTE • v0.8.1", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
         root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
         root.addView(text("Двухфазный LAN-поиск • Android Companion • API verification • Android TV • Samsung • Roku • LG • Cast • Hue • Yeelight • WLED", 13f, c("#AABBD4"), false))
 
@@ -280,8 +282,22 @@ class MainActivity : AppCompatActivity() {
 
         var candidate = incoming
         if (host != null && !incoming.protocol.startsWith("LAN")) {
-            val lanId = "lan:$host"
-            devices.remove(lanId)?.let { candidate = mergeNetwork(candidate, it) }
+            // One physical host can advertise itself through mDNS + SSDP + dedicated discovery.
+            // Merge all network-protocol records for the same IPv4 into one card instead of duplicating it.
+            val sameHostIds = devices.values
+                .filter { existing ->
+                    existing.id != incoming.id &&
+                        !existing.id.startsWith("wifi:") &&
+                        !existing.id.startsWith("ble:") &&
+                        !existing.id.startsWith("bt:") &&
+                        (existing.ipAddress == host || hostOf(existing.address) == host)
+                }
+                .map { it.id }
+            sameHostIds.forEach { id ->
+                devices.remove(id)?.let { existing ->
+                    candidate = if (existing.protocol.startsWith("LAN")) mergeNetwork(candidate, existing) else mergeDevice(existing, candidate)
+                }
+            }
         }
         devices[incoming.id]?.let { candidate = mergeDevice(it, candidate) }
         devices[incoming.id] = candidate
@@ -540,7 +556,7 @@ class MainActivity : AppCompatActivity() {
         return when {
             45123 in ports -> d.copy(
                 kind = "Телефон / планшет (Companion)",
-                protocol = "UniversalRemote Companion v1 (кандидат)",
+                protocol = "UniversalRemote Companion v2 (кандидат)",
                 brand = d.brand ?: "UniversalRemote Companion",
                 controllable = true,
                 capabilities = d.capabilities + setOf(ControlCapability.VOLUME, ControlCapability.MUTE, ControlCapability.MEDIA, ControlCapability.NAVIGATION)
@@ -660,7 +676,7 @@ class MainActivity : AppCompatActivity() {
                     val current = devices[d.id]
                     if (current != null) devices[d.id] = current.copy(
                         controllable = true, verified = companion.isPaired(info.deviceId), companionId = info.deviceId,
-                        kind = "Телефон / планшет (Companion)", protocol = "UniversalRemote Companion v1",
+                        kind = "Телефон / планшет (Companion)", protocol = "UniversalRemote Companion v2",
                         capabilities = current.capabilities + setOf(ControlCapability.VOLUME, ControlCapability.MUTE, ControlCapability.MEDIA, ControlCapability.NAVIGATION)
                     )
                     scheduleRender()
@@ -672,6 +688,7 @@ class MainActivity : AppCompatActivity() {
             return runOnUiThread { showAndroidTvRemote(d, host) }
         }
         if ("webos" in idText || ("lg" in idText && (3000 in ports || 3001 in ports))) {
+            if (!lgWebOs.isTlsTrusted(host)) return runOnUiThread { showLgWebOsRemote(d, host) }
             return lgWebOs.probe(host) { result -> runOnUiThread {
                 if (result.ok) { markVerified(d.id); showLgWebOsRemote(d, host) } else showNoControlFound(d, host, listOf(result.message))
             } }
@@ -683,7 +700,7 @@ class MainActivity : AppCompatActivity() {
             return pjlink.probe(host) { result -> runOnUiThread { if (result.ok) { markVerified(d.id); showPjLinkRemote(d, host) } else showNoControlFound(d, host, listOf(result.message)) } }
         }
         if (d.descriptionUrl != null && d.protocol.contains("UPnP MediaRenderer", true)) {
-            return upnp.probe(d.descriptionUrl) { result -> runOnUiThread {
+            return upnp.probe(host, d.descriptionUrl) { result -> runOnUiThread {
                 if (result.ok) { markVerified(d.id); showUpnpRemote(d) } else showNoControlFound(d, host, listOf(result.message))
             } }
         }
@@ -714,7 +731,9 @@ class MainActivity : AppCompatActivity() {
                                                 runOnUiThread { markVerified(d.id); showYeelightRemote(d, host, yeelightPort(d)) }
                                             } else {
                                                 errors += "Yeelight: ${yeelightResult.message}"
-                                                cast.probe(host) { castResult ->
+                                                if (!cast.isTlsTrusted(host)) {
+                                                    runOnUiThread { probeAndShowCast(d, host) }
+                                                } else cast.probe(host) { castResult ->
                                                     if (castResult.ok) {
                                                         runOnUiThread { markVerified(d.id); showCastRemote(d, host) }
                                                     } else {
@@ -748,7 +767,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showCompanionHelp() {
         AlertDialog.Builder(this)
-            .setTitle("Android Companion • v0.8.0")
+            .setTitle("Android Companion • v0.8.1")
             .setMessage("Для управления вторым Android-телефоном установите на него companion-debug.apk из того же GitHub Actions artifact. На втором телефоне откройте Companion → Запустить Companion. Затем здесь запустите поиск, откройте карточку телефона и введите одноразовый 12-символьный код.\n\nГромкость и media работают после pairing. Home/Back/Recents требуют вручную включить Accessibility на управляемом телефоне. PIN/пароль блокировки не используется и не обходится.")
             .setPositiveButton("Понятно", null)
             .show()
@@ -813,7 +832,7 @@ class MainActivity : AppCompatActivity() {
             for (i in 0 until editable.length) if (!editable[i].isWhitespace()) chars[out++] = editable[i].uppercaseChar()
             editable.clear()
             status.text = "Проверяю одноразовый pairing-код…"
-            companion.pair(host, port, info.deviceId, chars) { result -> runOnUiThread {
+            companion.pair(host, port, info.advertisementId, chars) { result -> runOnUiThread {
                 chars.fill('\u0000')
                 status.text = result.message
                 toast(result.message)
@@ -841,8 +860,12 @@ class MainActivity : AppCompatActivity() {
             "↩ Back" to { runCompanion(d, host, port, info.deviceId, "back") },
             "▣ Recents" to { runCompanion(d, host, port, info.deviceId, "recents") }
         )
-        if (companion.isPaired(info.deviceId)) layout.addView(controlRow("Забыть pairing этого телефона") {
-            companion.forget(info.deviceId); status.text = "Pairing удалён. На Companion потребуется новый код."; toast("Pairing удалён")
+        if (companion.isPaired(info.deviceId)) layout.addView(controlRow("Отозвать pairing этого телефона") {
+            status.text = "Отзываю pairing на управляемом телефоне…"
+            companion.forget(host, port, info.deviceId) { result -> runOnUiThread {
+                status.text = result.message
+                toast(result.message)
+            } }
         })
         AlertDialog.Builder(this).setTitle("Android Companion • ${info.name}").setView(scroll).setNegativeButton("Закрыть", null).show()
     }
@@ -963,6 +986,67 @@ class MainActivity : AppCompatActivity() {
     }
 
 
+    private fun confirmTlsFingerprint(title: String, host: String, fingerprint: String, approve: () -> Pair<Boolean, String>, after: () -> Unit) {
+        val pretty = fingerprint.chunked(2).joinToString(":")
+        AlertDialog.Builder(this)
+            .setTitle("$title • первое TLS-доверие")
+            .setMessage(
+                "SHA-256 сертификата:\n$pretty\n\n" +
+                    "Подтверждайте только своё устройство. Этот шаг исключает тихое автоматическое TOFU, но если производитель не показывает fingerprint в доверенном интерфейсе, первое наблюдение всё равно нельзя криптографически отличить от уже активного MITM."
+            )
+            .setNegativeButton("Отмена", null)
+            .setPositiveButton("Закрепить сертификат") { _, _ ->
+                val result = approve()
+                toast(result.second)
+                if (result.first) after()
+            }
+            .show()
+    }
+
+    private fun ensureSamsungTls(host: String, after: () -> Unit) {
+        if (samsung.isTlsTrusted(host)) return after()
+        toast("Получаю TLS fingerprint Samsung без отправки token…")
+        samsung.inspectTls(host) { result, fp -> runOnUiThread {
+            if (!result.ok || fp == null) return@runOnUiThread toast(result.message)
+            confirmTlsFingerprint("Samsung TV", host, fp, {
+                val r = samsung.approveTls(host, fp); r.ok to r.message
+            }, after)
+        } }
+    }
+
+    private fun ensureLgTls(host: String, after: () -> Unit) {
+        if (lgWebOs.isTlsTrusted(host)) return after()
+        toast("Получаю TLS fingerprint LG без client-key…")
+        lgWebOs.inspectTls(host) { result, fp -> runOnUiThread {
+            if (!result.ok || fp == null) return@runOnUiThread toast(result.message)
+            confirmTlsFingerprint("LG webOS", host, fp, {
+                val r = lgWebOs.approveTls(host, fp); r.ok to r.message
+            }, after)
+        } }
+    }
+
+    private fun ensureHueTls(host: String, after: () -> Unit) {
+        if (hue.isTlsTrusted(host)) return after()
+        toast("Получаю TLS fingerprint Hue без application key…")
+        hue.inspectTls(host) { result, fp -> runOnUiThread {
+            if (!result.ok || fp == null) return@runOnUiThread toast(result.message)
+            confirmTlsFingerprint("Philips Hue Bridge", host, fp, {
+                val r = hue.approveTls(host, fp); r.ok to r.message
+            }, after)
+        } }
+    }
+
+    private fun ensureCastTls(host: String, after: () -> Unit) {
+        if (cast.isTlsTrusted(host)) return after()
+        toast("Получаю TLS fingerprint Cast…")
+        cast.inspectTls(host) { result, fp -> runOnUiThread {
+            if (!result.ok || fp == null) return@runOnUiThread toast(result.message)
+            confirmTlsFingerprint("Google Cast", host, fp, {
+                val r = cast.approveTls(host, fp); r.ok to r.message
+            }, after)
+        } }
+    }
+
     private fun probeAndShowSamsung(d: NearbyDevice, host: String) {
         toast("Проверяю Samsung Tizen API…")
         samsung.probe(host) { result -> runOnUiThread {
@@ -973,7 +1057,11 @@ class MainActivity : AppCompatActivity() {
     private fun showSamsungRemote(d: NearbyDevice, host: String) {
         val scroll = ScrollView(this)
         val layout = remoteLayout(); scroll.addView(layout)
-        layout.addView(text(if (samsung.isPaired(host)) "✓ Samsung TV уже авторизован на этом телефоне" else "При первом нажатии подтвердите «Разрешить» на телевизоре. Выданный TV токен сохраняется локально.", 13f, if (samsung.isPaired(host)) c("#72F1CE") else c("#AABBD4"), false))
+        layout.addView(text(when {
+            samsung.isPaired(host) -> "✓ Samsung TV авторизован • TLS pin сохранён"
+            !samsung.isTlsTrusted(host) -> "Сначала приложение покажет SHA-256 TLS fingerprint и попросит закрепить сертификат; только затем TV сможет выдать token."
+            else -> "TLS pin подтверждён. При первом нажатии подтвердите «Разрешить» на телевизоре."
+        }, 13f, if (samsung.isPaired(host)) c("#72F1CE") else c("#AABBD4"), false))
         layout.addView(sectionTitle("НАВИГАЦИЯ"))
         addDpad(layout,
             { runSamsung(d, host, "KEY_UP") }, { runSamsung(d, host, "KEY_LEFT") }, { runSamsung(d, host, "KEY_ENTER") },
@@ -1005,48 +1093,56 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun runSamsung(d: NearbyDevice, host: String, key: String) {
-        samsung.key(host, key) { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
+        ensureSamsungTls(host) {
+            samsung.key(host, key) { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
+        }
     }
 
     private fun showLgWebOsRemote(d: NearbyDevice, host: String) {
         val scroll = ScrollView(this)
         val layout = remoteLayout(); scroll.addView(layout)
         val status = text(
-            if (lgWebOs.isPaired(host)) "✓ LG webOS уже сопряжён" else "При первом подключении подтвердите Universal Remote на экране LG TV.",
+            when {
+                lgWebOs.isPaired(host) -> "✓ LG webOS уже сопряжён • TLS pin сохранён"
+                !lgWebOs.isTlsTrusted(host) -> "Сначала подтвердите SHA-256 TLS fingerprint, затем разрешите Universal Remote на экране LG TV."
+                else -> "TLS pin подтверждён. Разрешите Universal Remote на экране LG TV."
+            },
             13f, if (lgWebOs.isPaired(host)) c("#72F1CE") else c("#AABBD4"), false
         )
         layout.addView(status)
-        layout.addView(controlRow("🔐 Проверить / сопрячь TV") {
-            lgWebOs.probe(host) { result -> runOnUiThread {
-                status.text = result.message
-                toast(result.message)
-                if (result.ok) markVerified(d.id)
-            } }
+        layout.addView(controlRow("🔐 Проверить TLS / сопрячь TV") {
+            ensureLgTls(host) {
+                lgWebOs.probe(host) { result -> runOnUiThread {
+                    status.text = result.message
+                    toast(result.message)
+                    if (result.ok) markVerified(d.id)
+                } }
+            }
         })
         layout.addView(sectionTitle("НАВИГАЦИЯ"))
         addDpad(layout,
-            { runLg(d) { cb -> lgWebOs.button(host, "UP", cb) } },
-            { runLg(d) { cb -> lgWebOs.button(host, "LEFT", cb) } },
-            { runLg(d) { cb -> lgWebOs.button(host, "ENTER", cb) } },
-            { runLg(d) { cb -> lgWebOs.button(host, "RIGHT", cb) } },
-            { runLg(d) { cb -> lgWebOs.button(host, "DOWN", cb) } }
+            { runLg(d, host) { cb -> lgWebOs.button(host, "UP", cb) } },
+            { runLg(d, host) { cb -> lgWebOs.button(host, "LEFT", cb) } },
+            { runLg(d, host) { cb -> lgWebOs.button(host, "ENTER", cb) } },
+            { runLg(d, host) { cb -> lgWebOs.button(host, "RIGHT", cb) } },
+            { runLg(d, host) { cb -> lgWebOs.button(host, "DOWN", cb) } }
         )
         addRemoteRow(layout,
-            "⌂ Home" to { runLg(d) { cb -> lgWebOs.button(host, "HOME", cb) } },
-            "↩ Back" to { runLg(d) { cb -> lgWebOs.button(host, "BACK", cb) } },
-            "⏻ Off" to { runLg(d) { cb -> lgWebOs.powerOff(host, cb) } }
+            "⌂ Home" to { runLg(d, host) { cb -> lgWebOs.button(host, "HOME", cb) } },
+            "↩ Back" to { runLg(d, host) { cb -> lgWebOs.button(host, "BACK", cb) } },
+            "⏻ Off" to { runLg(d, host) { cb -> lgWebOs.powerOff(host, cb) } }
         )
         addRemoteRow(layout,
-            "Vol −" to { runLg(d) { cb -> lgWebOs.volumeDown(host, cb) } },
-            "Mute" to { runLg(d) { cb -> lgWebOs.mute(host, true, cb) } },
-            "Vol +" to { runLg(d) { cb -> lgWebOs.volumeUp(host, cb) } }
+            "Vol −" to { runLg(d, host) { cb -> lgWebOs.volumeDown(host, cb) } },
+            "Mute" to { runLg(d, host) { cb -> lgWebOs.mute(host, true, cb) } },
+            "Vol +" to { runLg(d, host) { cb -> lgWebOs.volumeUp(host, cb) } }
         )
         addRemoteRow(layout,
-            "⏪" to { runLg(d) { cb -> lgWebOs.rewind(host, cb) } },
-            "▶" to { runLg(d) { cb -> lgWebOs.play(host, cb) } },
-            "Ⅱ" to { runLg(d) { cb -> lgWebOs.pause(host, cb) } },
-            "■" to { runLg(d) { cb -> lgWebOs.stop(host, cb) } },
-            "⏩" to { runLg(d) { cb -> lgWebOs.fastForward(host, cb) } }
+            "⏪" to { runLg(d, host) { cb -> lgWebOs.rewind(host, cb) } },
+            "▶" to { runLg(d, host) { cb -> lgWebOs.play(host, cb) } },
+            "Ⅱ" to { runLg(d, host) { cb -> lgWebOs.pause(host, cb) } },
+            "■" to { runLg(d, host) { cb -> lgWebOs.stop(host, cb) } },
+            "⏩" to { runLg(d, host) { cb -> lgWebOs.fastForward(host, cb) } }
         )
         if (d.macAddress != null) layout.addView(controlRow("⚡ Включить TV через Wake-on-LAN") { sendWake(d) })
         layout.addView(controlRow("Забыть сопряжение LG TV") {
@@ -1055,16 +1151,21 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle("LG webOS • ${d.name}").setView(scroll).setNegativeButton("Закрыть", null).show()
     }
 
-    private fun runLg(d: NearbyDevice, action: (((LgWebOsController.Result) -> Unit)) -> Unit) {
-        action { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
+    private fun runLg(d: NearbyDevice, host: String, action: (((LgWebOsController.Result) -> Unit)) -> Unit) {
+        ensureLgTls(host) {
+            action { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
+        }
     }
 
     private fun probeAndShowCast(d: NearbyDevice, host: String) {
-        toast("Проверяю Google Cast v2…")
-        cast.probe(host) { result -> runOnUiThread {
-            if (!result.ok) return@runOnUiThread toast(result.message)
-            showCastRemote(d, host)
-        } }
+        ensureCastTls(host) {
+            toast("Проверяю Google Cast v2…")
+            cast.probe(host) { result -> runOnUiThread {
+                if (!result.ok) return@runOnUiThread toast(result.message)
+                markVerified(d.id)
+                showCastRemote(d, host)
+            } }
+        }
     }
 
     private fun showCastRemote(d: NearbyDevice, host: String) {
@@ -1093,17 +1194,23 @@ class MainActivity : AppCompatActivity() {
     private fun showHueRemote(d: NearbyDevice, host: String) {
         val layout = remoteLayout()
         val status = text(
-            if (hue.isPaired(host)) "✓ Hue Bridge авторизован" else "Нажмите физическую кнопку на Hue Bridge, затем кнопку авторизации ниже.",
+            when {
+                hue.isPaired(host) -> "✓ Hue Bridge авторизован • TLS pin сохранён"
+                !hue.isTlsTrusted(host) -> "После нажатия кнопки Bridge сначала подтвердите SHA-256 TLS fingerprint, затем будет запрошен application key."
+                else -> "TLS pin подтверждён. Нажмите физическую кнопку на Hue Bridge, затем авторизацию ниже."
+            },
             13f, if (hue.isPaired(host)) c("#72F1CE") else c("#AABBD4"), false
         )
         layout.addView(status)
         layout.addView(controlRow("🔗 Я нажал кнопку Bridge — авторизовать") {
-            status.text = "Авторизация Hue…"
-            hue.pair(host) { result -> runOnUiThread {
-                status.text = result.message
-                toast(result.message)
-                if (result.ok) markVerified(d.id)
-            } }
+            ensureHueTls(host) {
+                status.text = "Авторизация Hue…"
+                hue.pair(host) { result -> runOnUiThread {
+                    status.text = result.message
+                    toast(result.message)
+                    if (result.ok) markVerified(d.id)
+                } }
+            }
         })
         layout.addView(controlRow("💡 Показать лампы этого Bridge") { openHueLightList(d, host) })
         if (hue.isPaired(host)) layout.addView(controlRow("Забыть Hue Bridge") {
@@ -1276,14 +1383,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun showUpnpRemote(d: NearbyDevice) {
         val url = d.descriptionUrl ?: return
+        val host = d.ipAddress ?: hostOf(url) ?: return toast("UPnP: IP устройства не определён")
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(18), dp(4), dp(18), 0) }
-        layout.addView(controlRow("Громкость −") { runUpnp(d) { cb -> upnp.adjustVolume(url, -5, cb) } })
-        layout.addView(controlRow("Громкость +") { runUpnp(d) { cb -> upnp.adjustVolume(url, 5, cb) } })
-        layout.addView(controlRow("Mute") { runUpnp(d) { cb -> upnp.setMute(url, true, cb) } })
-        layout.addView(controlRow("Unmute") { runUpnp(d) { cb -> upnp.setMute(url, false, cb) } })
-        layout.addView(controlRow("▶ Play") { runUpnp(d) { cb -> upnp.media(url, "Play", cb) } })
-        layout.addView(controlRow("Ⅱ Pause") { runUpnp(d) { cb -> upnp.media(url, "Pause", cb) } })
-        layout.addView(controlRow("■ Stop") { runUpnp(d) { cb -> upnp.media(url, "Stop", cb) } })
+        layout.addView(controlRow("Громкость −") { runUpnp(d) { cb -> upnp.adjustVolume(host, url, -5, cb) } })
+        layout.addView(controlRow("Громкость +") { runUpnp(d) { cb -> upnp.adjustVolume(host, url, 5, cb) } })
+        layout.addView(controlRow("Mute") { runUpnp(d) { cb -> upnp.setMute(host, url, true, cb) } })
+        layout.addView(controlRow("Unmute") { runUpnp(d) { cb -> upnp.setMute(host, url, false, cb) } })
+        layout.addView(controlRow("▶ Play") { runUpnp(d) { cb -> upnp.media(host, url, "Play", cb) } })
+        layout.addView(controlRow("Ⅱ Pause") { runUpnp(d) { cb -> upnp.media(host, url, "Pause", cb) } })
+        layout.addView(controlRow("■ Stop") { runUpnp(d) { cb -> upnp.media(host, url, "Stop", cb) } })
         AlertDialog.Builder(this).setTitle("UPnP-пульт • ${d.name}").setView(layout).setNegativeButton("Закрыть", null).show()
     }
 

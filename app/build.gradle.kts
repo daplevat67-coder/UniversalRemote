@@ -12,9 +12,24 @@ android {
         applicationId = "com.example.universalremote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
-        versionName = "0.8.0"
+        versionCode = 12
+        versionName = "0.8.1"
     }
+}
+
+val releaseStore = System.getenv("ANDROID_KEYSTORE_FILE")
+val releaseAlias = System.getenv("ANDROID_KEY_ALIAS")
+val releaseStorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+val releaseKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+
+if (!releaseStore.isNullOrBlank() && !releaseAlias.isNullOrBlank() && !releaseStorePassword.isNullOrBlank() && !releaseKeyPassword.isNullOrBlank()) {
+    android.signingConfigs.create("ciRelease") {
+        storeFile = rootProject.file(releaseStore)
+        storePassword = releaseStorePassword
+        keyAlias = releaseAlias
+        keyPassword = releaseKeyPassword
+    }
+    android.buildTypes.getByName("release").signingConfig = android.signingConfigs.getByName("ciRelease")
 }
 
 dependencies {
@@ -23,4 +38,5 @@ dependencies {
     implementation("androidx.recyclerview:recyclerview:1.4.0")
     implementation("com.google.android.material:material:1.12.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    testImplementation("junit:junit:4.13.2")
 }

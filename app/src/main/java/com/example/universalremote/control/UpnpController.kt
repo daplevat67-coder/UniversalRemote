@@ -18,17 +18,17 @@ class UpnpController {
     private val executor = Executors.newFixedThreadPool(3)
     private val cache = ConcurrentHashMap<String, Services>()
 
-    fun probe(descriptionUrl: String, callback: (Result) -> Unit) = executor.execute {
+    fun probe(expectedHost: String, descriptionUrl: String, callback: (Result) -> Unit) = executor.execute {
         callback(runCatching {
-            val found = services(descriptionUrl)
+            val found = services(expectedHost, descriptionUrl)
             if (found.rendering == null && found.transport == null) error("UPnP MediaRenderer services не найдены")
             Result(true, "UPnP MediaRenderer API подтверждён")
         }.getOrElse { Result(false, it.message ?: "UPnP descriptor недоступен") })
     }
 
-    fun adjustVolume(descriptionUrl: String, delta: Int, callback: (Result) -> Unit) = executor.execute {
+    fun adjustVolume(expectedHost: String, descriptionUrl: String, delta: Int, callback: (Result) -> Unit) = executor.execute {
         val result = runCatching {
-            val rendering = services(descriptionUrl).rendering ?: error("RenderingControl не найден")
+            val rendering = services(expectedHost, descriptionUrl).rendering ?: error("RenderingControl не найден")
             val current = getVolume(rendering).coerceIn(0, 100)
             val target = (current + delta).coerceIn(0, 100)
             soap(rendering, "SetVolume", "<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredVolume>$target</DesiredVolume>")
@@ -37,18 +37,18 @@ class UpnpController {
         callback(result)
     }
 
-    fun setMute(descriptionUrl: String, mute: Boolean, callback: (Result) -> Unit) = executor.execute {
+    fun setMute(expectedHost: String, descriptionUrl: String, mute: Boolean, callback: (Result) -> Unit) = executor.execute {
         val result = runCatching {
-            val rendering = services(descriptionUrl).rendering ?: error("RenderingControl не найден")
+            val rendering = services(expectedHost, descriptionUrl).rendering ?: error("RenderingControl не найден")
             soap(rendering, "SetMute", "<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredMute>${if (mute) 1 else 0}</DesiredMute>")
             Result(true, if (mute) "Звук выключен" else "Звук включён")
         }.getOrElse { Result(false, it.message ?: "Ошибка UPnP") }
         callback(result)
     }
 
-    fun media(descriptionUrl: String, action: String, callback: (Result) -> Unit) = executor.execute {
+    fun media(expectedHost: String, descriptionUrl: String, action: String, callback: (Result) -> Unit) = executor.execute {
         val result = runCatching {
-            val transport = services(descriptionUrl).transport ?: error("AVTransport не найден")
+            val transport = services(expectedHost, descriptionUrl).transport ?: error("AVTransport не найден")
             when (action) {
                 "Play" -> soap(transport, "Play", "<InstanceID>0</InstanceID><Speed>1</Speed>")
                 "Pause" -> soap(transport, "Pause", "<InstanceID>0</InstanceID>")
@@ -62,12 +62,15 @@ class UpnpController {
 
     fun close() = executor.shutdownNow()
 
-    private fun services(descriptionUrl: String): Services = cache[descriptionUrl] ?: discover(descriptionUrl).also { cache[descriptionUrl] = it }
+    private fun services(expectedHost: String, descriptionUrl: String): Services {
+        val key = "$expectedHost|$descriptionUrl"
+        return cache[key] ?: discover(expectedHost, descriptionUrl).also { cache[key] = it }
+    }
 
-    private fun discover(descriptionUrl: String): Services {
+    private fun discover(expectedHost: String, descriptionUrl: String): Services {
+        LocalEndpointPolicy.requireSamePrivateHost(expectedHost, descriptionUrl, setOf("http", "https"))
         val base = URI(descriptionUrl)
-        val host = base.host ?: error("UPnP LOCATION без host")
-        LocalEndpointPolicy.requireSamePrivateHost(host, descriptionUrl, setOf("http", "https"))
+        val host = expectedHost
         val connection = URL(descriptionUrl).openConnection() as HttpURLConnection
         connection.instanceFollowRedirects = false
         connection.connectTimeout = 1800

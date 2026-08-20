@@ -20,9 +20,36 @@ object CompanionCrypto {
         return mac.doFinal(value.toByteArray(Charsets.UTF_8))
     }
 
+    fun encryptSessionPayload(key: ByteArray, plaintext: String): String {
+        val aesKey = CompanionCrypto.hmac(key, "UniversalRemote Companion command encryption v2").copyOf(32)
+        return try {
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(aesKey, "AES"))
+            b64(cipher.iv + cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8)))
+        } finally {
+            aesKey.fill(0)
+        }
+    }
+
+    fun decryptSessionPayload(key: ByteArray, encoded: String): String {
+        val raw = fromB64(encoded)
+        require(raw.size > IV_BYTES) { "Некорректный encrypted payload" }
+        val aesKey = CompanionCrypto.hmac(key, "UniversalRemote Companion command encryption v2").copyOf(32)
+        return try {
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(128, raw.copyOfRange(0, IV_BYTES)))
+            String(cipher.doFinal(raw.copyOfRange(IV_BYTES, raw.size)), Charsets.UTF_8)
+        } finally {
+            aesKey.fill(0)
+        }
+    }
+
     fun b64(value: ByteArray): String = Base64.encodeToString(value, Base64.NO_WRAP)
     fun fromB64(value: String): ByteArray = Base64.decode(value, Base64.NO_WRAP)
     fun constantTime(a: ByteArray, b: ByteArray): Boolean = MessageDigest.isEqual(a, b)
+
+    private const val TRANSFORMATION = "AES/GCM/NoPadding"
+    private const val IV_BYTES = 12
 }
 
 class CompanionSecureStore(context: Context) {
@@ -45,7 +72,18 @@ class CompanionSecureStore(context: Context) {
         cipher.doFinal(raw.copyOfRange(IV_BYTES, raw.size))
     }.getOrNull()
 
-    fun remove(key: String) { prefs.edit().remove(key).apply() }
+    fun putString(key: String, value: String) {
+        val bytes = value.toByteArray(Charsets.UTF_8)
+        try { putBytes(key, bytes) } finally { bytes.fill(0) }
+    }
+
+    fun getString(key: String): String? {
+        val bytes = getBytes(key) ?: return null
+        return try { String(bytes, Charsets.UTF_8) } finally { bytes.fill(0) }
+    }
+
+    fun keys(prefix: String): Set<String> = prefs.all.keys.filterTo(linkedSetOf()) { it.startsWith(prefix) }
+    fun remove(vararg keys: String) { prefs.edit().apply { keys.forEach(::remove) }.apply() }
 
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

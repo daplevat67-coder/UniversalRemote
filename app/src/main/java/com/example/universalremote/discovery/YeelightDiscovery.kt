@@ -2,9 +2,11 @@ package com.example.universalremote.discovery
 
 import com.example.universalremote.model.ControlCapability
 import com.example.universalremote.model.NearbyDevice
+import com.example.universalremote.network.LocalEndpointPolicy
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.URI
 import kotlin.concurrent.thread
 
 class YeelightDiscovery(private val onDevice: (NearbyDevice) -> Unit) {
@@ -28,26 +30,31 @@ class YeelightDiscovery(private val onDevice: (NearbyDevice) -> Unit) {
                 while (running) {
                     val packet = DatagramPacket(buffer, buffer.size)
                     runCatching { socket?.receive(packet) }.onSuccess {
+                        val sourceHost = packet.address.hostAddress ?: return@onSuccess
+                        if (!LocalEndpointPolicy.isPrivateIpv4(sourceHost)) return@onSuccess
                         val text = String(packet.data, 0, packet.length, Charsets.UTF_8)
                         val location = header(text, "Location") ?: return@onSuccess
                         if (!location.startsWith("yeelight://", true)) return@onSuccess
-                        val hostPort = location.substringAfter("yeelight://")
-                        val host = hostPort.substringBefore(':')
-                        val port = hostPort.substringAfter(':', "55443").toIntOrNull() ?: 55443
+                        val uri = runCatching { URI(location) }.getOrNull() ?: return@onSuccess
+                        val advertisedHost = uri.host ?: return@onSuccess
+                        val advertisedAddress = runCatching { InetAddress.getByName(advertisedHost) }.getOrNull() ?: return@onSuccess
+                        // Never follow a host supplied by the UDP payload. It must resolve to the packet source.
+                        if (advertisedAddress != packet.address) return@onSuccess
+                        val port = uri.port.takeIf { p -> p in 1..65535 } ?: 55443
                         val name = header(text, "name")?.takeIf { it.isNotBlank() }
                             ?: header(text, "model")?.let { "Yeelight $it" }
                             ?: "Yeelight"
                         onDevice(
                             NearbyDevice(
-                                id = "yeelight:${header(text, "id") ?: host}",
+                                id = "yeelight:${header(text, "id") ?: sourceHost}",
                                 name = name,
                                 kind = "Лампа / свет",
                                 protocol = "Yeelight LAN Control",
-                                address = "$host:$port",
+                                address = "$sourceHost:$port",
                                 controllable = true,
                                 brand = "Yeelight",
                                 capabilities = setOf(ControlCapability.LIGHT_POWER, ControlCapability.BRIGHTNESS, ControlCapability.COLOR),
-                                ipAddress = host
+                                ipAddress = sourceHost
                             )
                         )
                     }

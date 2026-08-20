@@ -22,6 +22,18 @@ class CastV2Controller(context: Context) {
     private val secrets = SecureStore(context, "cast_tls_pins")
     private val tofu = TofuTls(secrets, "cast")
 
+    fun isTlsTrusted(host: String): Boolean = tofu.isPinned(host)
+    fun inspectTls(host: String, callback: (Result, String?) -> Unit) = executor.execute {
+        val pair = runCatching {
+            require(LocalEndpointPolicy.isPrivateIpv4(host)) { "Cast: адрес вне private LAN" }
+            Result(true, "Cast TLS fingerprint получен") to tofu.inspectFingerprint(host, 8009)
+        }.getOrElse { Result(false, "Cast TLS: ${it.message ?: it.javaClass.simpleName}") to null }
+        callback(pair.first, pair.second)
+    }
+    fun approveTls(host: String, fingerprint: String): Result = runCatching {
+        tofu.approve(host, fingerprint); Result(true, "Cast TLS-сертификат закреплён")
+    }.getOrElse { Result(false, "Cast TLS: ${it.message}") }
+
     fun probe(host: String, callback: (Result) -> Unit) = run(host, callback) { session ->
         session.receiverStatus()
         Result(true, "Google Cast v2 доступен")

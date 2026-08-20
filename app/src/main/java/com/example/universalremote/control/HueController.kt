@@ -13,6 +13,7 @@ import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /** Philips Hue local API. Application keys and TOFU certificate pins are encrypted with Android Keystore. */
@@ -24,8 +25,20 @@ class HueController(context: Context) {
     private val tofu = TofuTls(secrets, "hue")
     private val jsonType = "application/json; charset=utf-8".toMediaType()
     private val clients = ConcurrentHashMap<String, OkHttpClient>()
+    private val executor = Executors.newFixedThreadPool(2)
 
     fun isPaired(host: String): Boolean = tofu.isPinned(host) && !secrets.getString("key_$host").isNullOrBlank()
+    fun isTlsTrusted(host: String): Boolean = tofu.isPinned(host)
+    fun inspectTls(host: String, callback: (Result, String?) -> Unit) = executor.execute {
+        val pair = runCatching {
+            require(LocalEndpointPolicy.isPrivateIpv4(host)) { "Hue: адрес вне private LAN" }
+            Result(true, "Hue TLS fingerprint получен") to tofu.inspectFingerprint(host, 443)
+        }.getOrElse { Result(false, "Hue TLS: ${it.message ?: it.javaClass.simpleName}") to null }
+        callback(pair.first, pair.second)
+    }
+    fun approveTls(host: String, fingerprint: String): Result = runCatching {
+        tofu.approve(host, fingerprint); Result(true, "Hue TLS-сертификат закреплён")
+    }.getOrElse { Result(false, "Hue TLS: ${it.message}") }
     fun forget(host: String) {
         secrets.remove("key_$host", "scheme_$host", "fp_$host")
         tofu.forget(host)
@@ -156,7 +169,7 @@ class HueController(context: Context) {
             .followRedirects(false)
             .followSslRedirects(false)
             .sslSocketFactory(ssl.socketFactory, trust)
-            .hostnameVerifier { _, _ -> true }
+            .hostnameVerifier { _, session -> tofu.verifyPinnedSession(host, session) }
             .build()
     }
 
@@ -166,6 +179,7 @@ class HueController(context: Context) {
     }
 
     fun close() {
+        executor.shutdownNow()
         clients.values.forEach { it.closeResources() }
         clients.clear()
     }

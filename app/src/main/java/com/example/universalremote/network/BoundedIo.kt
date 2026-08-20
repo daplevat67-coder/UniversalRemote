@@ -21,4 +21,18 @@ object BoundedIo {
         }
         return out.toString(Charsets.UTF_8.name())
     }
+
+    /** Reads one CR/LF terminated line without ever buffering more than [maxBytes]. */
+    fun readAsciiLine(input: InputStream, maxBytes: Int = 64 * 1024): String? {
+        val limit = maxBytes.coerceIn(64, 256 * 1024)
+        val out = ByteArrayOutputStream(minOf(limit, 1024))
+        while (true) {
+            val b = input.read()
+            if (b < 0) return if (out.size() == 0) null else out.toString(Charsets.US_ASCII.name())
+            if (b == '\n'.code) return out.toString(Charsets.US_ASCII.name())
+            if (b == '\r'.code) continue
+            require(out.size() < limit) { "Строка ответа устройства превышает $limit байт" }
+            out.write(b)
+        }
+    }
 }
