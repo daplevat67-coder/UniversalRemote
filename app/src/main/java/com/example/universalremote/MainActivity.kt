@@ -147,9 +147,9 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(26), dp(18), dp(14))
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c("#07111F"), c("#101B35"), c("#132842")))
         }
-        root.addView(text("UNIVERSAL REMOTE • v0.8.1", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+        root.addView(text("UNIVERSAL REMOTE • v0.9.0", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
         root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
-        root.addView(text("Двухфазный LAN-поиск • Android Companion • API verification • Android TV • Samsung • Roku • LG • Cast • Hue • Yeelight • WLED", 13f, c("#AABBD4"), false))
+        root.addView(text("Двухфазный LAN-поиск • Android + iOS/iPadOS Companion • Apple/Bonjour • API verification • TV • Cast • Hue • Yeelight • WLED", 13f, c("#AABBD4"), false))
 
         val radar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -179,7 +179,8 @@ class MainActivity : AppCompatActivity() {
         tools.addView(smallButton("НАСТРОЙКИ СКАНЕРА") { showSettings() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginStart = dp(5) })
         root.addView(tools)
         root.addView(smallButton("РУЧНОЙ IP / ПРОВЕРКА УПРАВЛЕНИЯ") { showManualControl() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
-        root.addView(smallButton("📱 КАК УПРАВЛЯТЬ ANDROID-ТЕЛЕФОНОМ") { showCompanionHelp() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(8)) })
+        root.addView(smallButton("📱 КАК УПРАВЛЯТЬ ANDROID-ТЕЛЕФОНОМ") { showCompanionHelp() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
+        root.addView(smallButton("🍎 IPHONE / IPAD • БЕЗ ПРИЛОЖЕНИЯ И С COMPANION") { showIosHelp() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(8)) })
 
         search = EditText(this).apply {
             hint = "Поиск: имя, IP, MAC, порт, бренд…"
@@ -466,6 +467,9 @@ class MainActivity : AppCompatActivity() {
             isRemoteCandidate(d0) -> layout.addView(controlRow("🧭 ПРОВЕРИТЬ И ОТКРЫТЬ ПУЛЬТ") { detectAndOpenRemote(currentDevice(initial.id)) })
             else -> layout.addView(controlRow("Как подключить управление") { showPairingInfo(d0) })
         }
+        if (isAppleMobile(d0)) {
+            layout.addView(controlRow("🍎 iPhone / iPad: варианты управления") { showIosHelp(d0) })
+        }
 
         details.text = deviceDetailsText(d0) + if (hostOf(d0.address) != null || d0.ipAddress != null) "\n\nСетевой анализ запускается…" else ""
         val dialog = AlertDialog.Builder(this).setTitle(d0.name).setView(scroll).setNegativeButton("Закрыть", null).create()
@@ -644,7 +648,7 @@ class MainActivity : AppCompatActivity() {
     private fun detectAndOpenRemote(d: NearbyDevice) {
         val host = d.ipAddress ?: hostOf(d.address) ?: return showPairingInfo(d)
         toast("Проверяю реальные API на $host…")
-        val controlPorts = listOf(80, 443, 3000, 3001, 4352, 6466, 6467, 8001, 8002, 8008, 8009, 8060, 55443, CompanionController.DEFAULT_PORT)
+        val controlPorts = listOf(80, 443, 3000, 3001, 4352, 6466, 6467, 8001, 8002, 8008, 8009, 8060, 55443, 62078, CompanionController.DEFAULT_PORT)
         val cfg = loadScanConfig().copy(
             ports = (controlPorts + d.openPorts.map { it.port }).distinct(),
             connectTimeoutMs = loadScanConfig().connectTimeoutMs.coerceAtLeast(350),
@@ -674,11 +678,26 @@ class MainActivity : AppCompatActivity() {
                 val info = result.info
                 if (result.ok && info != null) {
                     val current = devices[d.id]
-                    if (current != null) devices[d.id] = current.copy(
-                        controllable = true, verified = companion.isPaired(info.deviceId), companionId = info.deviceId,
-                        kind = "Телефон / планшет (Companion)", protocol = "UniversalRemote Companion v2",
-                        capabilities = current.capabilities + setOf(ControlCapability.VOLUME, ControlCapability.MUTE, ControlCapability.MEDIA, ControlCapability.NAVIGATION)
-                    )
+                    if (current != null) {
+                        val ios = info.platform == "ios"
+                        val caps = buildSet {
+                            addAll(current.capabilities)
+                            if (ios && "identify" in info.actions) add(ControlCapability.FIND_DEVICE)
+                            if (ios && info.actions.any { it.startsWith("brightness_") }) add(ControlCapability.BRIGHTNESS)
+                            if (!ios) {
+                                if (info.actions.any { it.startsWith("volume_") } || "mute" in info.actions) add(ControlCapability.VOLUME)
+                                if (info.actions.any { it.startsWith("media_") }) add(ControlCapability.MEDIA)
+                                if (info.actions.any { it in setOf("home", "back", "recents") }) add(ControlCapability.NAVIGATION)
+                            }
+                        }
+                        devices[d.id] = current.copy(
+                            controllable = true, verified = companion.isPaired(info.deviceId), companionId = info.deviceId,
+                            kind = if (ios) "iPhone / iPad (iOS Companion)" else "Телефон / планшет (Android Companion)",
+                            brand = if (ios) "Apple / UniversalRemote iOS Companion" else current.brand,
+                            protocol = if (ios) "UniversalRemote Companion v2 • iOS/iPadOS" else "UniversalRemote Companion v2 • Android",
+                            capabilities = caps
+                        )
+                    }
                     scheduleRender()
                     showCompanionRemote(d.copy(companionId = info.deviceId, verified = companion.isPaired(info.deviceId)), host, port, info)
                 } else showNoControlFound(d, host, listOf(result.message))
@@ -767,10 +786,38 @@ class MainActivity : AppCompatActivity() {
 
     private fun showCompanionHelp() {
         AlertDialog.Builder(this)
-            .setTitle("Android Companion • v0.8.1")
+            .setTitle("Android Companion • v0.9.0")
             .setMessage("Для управления вторым Android-телефоном установите на него companion-debug.apk из того же GitHub Actions artifact. На втором телефоне откройте Companion → Запустить Companion. Затем здесь запустите поиск, откройте карточку телефона и введите одноразовый 12-символьный код.\n\nГромкость и media работают после pairing. Home/Back/Recents требуют вручную включить Accessibility на управляемом телефоне. PIN/пароль блокировки не используется и не обходится.")
             .setPositiveButton("Понятно", null)
             .show()
+    }
+
+    private fun showIosHelp(device: NearbyDevice? = null) {
+        val detected = device?.let {
+            val type = listOf(it.name, it.kind, it.protocol, it.brand.orEmpty(), it.hostname.orEmpty()).joinToString(" ")
+            "\n\nНайдено сейчас: ${it.name}\n${it.protocol}\n${it.ipAddress ?: hostOf(it.address) ?: "IPv4 не подтверждён"}"
+        }.orEmpty()
+        AlertDialog.Builder(this)
+            .setTitle("iPhone / iPad • v0.9.0")
+            .setMessage(
+                "БЕЗ ПРИЛОЖЕНИЯ НА iOS:\n" +
+                    "• UniversalRemote ищет Apple Bonjour/Mobile Device признаки и показывает iPhone/iPad как отдельный класс устройств.\n" +
+                    "• Если iPad штатно enrolled в MDM, административные команды (например lock/app management) должны идти через ваш MDM-сервер; PIN экрана не является сетевым паролем.\n" +
+                    "• Обычная iPadOS не предоставляет стороннему Android-приложению API для Home/Back/касания по экрану.\n\n" +
+                    "С IOS COMPANION:\n" +
+                    "• исходники ios-companion входят в проект v0.9.0; pairing совместим с Companion v2, код живёт 5 минут, сессии можно отзывать;\n" +
+                    "• доступны Ping, Find/звуковой отклик и яркость экрана, когда Companion активен;\n" +
+                    "• iOS может приостанавливать локальный listener в фоне, поэтому Companion не обещает скрытое/постоянное управление.\n\n" +
+                    "Для установки iOS Companion на физический iPhone/iPad нужна подпись Apple Developer/вашего Team. GitHub CI делает compile-check, но не выдаёт фальшивый неподписанный IPA." + detected
+            )
+            .setPositiveButton("Понятно", null)
+            .show()
+    }
+
+    private fun isAppleMobile(d: NearbyDevice): Boolean {
+        val text = listOf(d.name, d.kind, d.brand.orEmpty(), d.protocol, d.hardwareVendor.orEmpty(), d.hostname.orEmpty()).joinToString(" ").lowercase()
+        return d.brand?.contains("Apple", true) == true || d.hardwareVendor?.contains("Apple", true) == true ||
+            listOf("iphone", "ipad", "companion link", "apple-mobdev2", "apple mobile", "ios", "ipados").any { it in text }
     }
 
     private fun showManualControl() {
@@ -809,10 +856,11 @@ class MainActivity : AppCompatActivity() {
         ?: CompanionController.DEFAULT_PORT
 
     private fun showCompanionRemote(d: NearbyDevice, host: String, port: Int, info: CompanionController.Info) {
+        val ios = info.platform == "ios"
         val scroll = ScrollView(this)
         val layout = remoteLayout(); scroll.addView(layout)
         val status = text(
-            if (companion.isPaired(info.deviceId)) "✓ Companion сопряжён • ${info.name}" else "Нужно один раз ввести код с экрана Companion на управляемом телефоне.",
+            if (companion.isPaired(info.deviceId)) "✓ Companion сопряжён • ${info.name}" else "Нужно один раз ввести код с экрана Companion на управляемом устройстве.",
             13f, if (companion.isPaired(info.deviceId)) c("#72F1CE") else c("#AABBD4"), false
         ).apply { setPadding(0, 0, 0, dp(8)) }
         layout.addView(status)
@@ -824,7 +872,7 @@ class MainActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
         }
         layout.addView(code)
-        layout.addView(controlRow("🔐 Сопрячь этот телефон") {
+        layout.addView(controlRow("🔐 Сопрячь это устройство") {
             val editable = code.text
             val useful = editable.count { !it.isWhitespace() }
             val chars = CharArray(useful)
@@ -839,35 +887,60 @@ class MainActivity : AppCompatActivity() {
                 if (result.ok) markVerified(d.id)
             } }
         })
-        layout.addView(sectionTitle("ГРОМКОСТЬ И МЕДИА"))
-        addRemoteRow(layout,
-            "Vol −" to { runCompanion(d, host, port, info.deviceId, "volume_down") },
-            "Mute" to { runCompanion(d, host, port, info.deviceId, "mute") },
-            "Vol +" to { runCompanion(d, host, port, info.deviceId, "volume_up") }
-        )
-        addRemoteRow(layout,
-            "⏮" to { runCompanion(d, host, port, info.deviceId, "media_previous") },
-            "▶/Ⅱ" to { runCompanion(d, host, port, info.deviceId, "media_play_pause") },
-            "⏭" to { runCompanion(d, host, port, info.deviceId, "media_next") }
-        )
-        layout.addView(sectionTitle("СИСТЕМНАЯ НАВИГАЦИЯ"))
-        layout.addView(text(
-            if (info.accessibility) "Accessibility Companion включён: Home/Back/Recents доступны." else "Home/Back/Recents требуют вручную включить Accessibility на управляемом телефоне. Companion не читает экран.",
-            12f, if (info.accessibility) c("#72F1CE") else c("#AABBD4"), false
-        ))
-        addRemoteRow(layout,
-            "⌂ Home" to { runCompanion(d, host, port, info.deviceId, "home") },
-            "↩ Back" to { runCompanion(d, host, port, info.deviceId, "back") },
-            "▣ Recents" to { runCompanion(d, host, port, info.deviceId, "recents") }
-        )
-        if (companion.isPaired(info.deviceId)) layout.addView(controlRow("Отозвать pairing этого телефона") {
-            status.text = "Отзываю pairing на управляемом телефоне…"
+
+        if (ios) {
+            layout.addView(sectionTitle("IOS / IPADOS COMPANION"))
+            layout.addView(text(
+                "iOS разрешает Companion только собственные функции приложения. Он не может эмулировать Home/Back/касания во всей iPadOS и не принимает PIN экрана как remote credential. Локальный listener может быть приостановлен системой, когда приложение уходит в фон.",
+                12f, c("#AABBD4"), false
+            ))
+            addRemoteRow(layout,
+                "✓ Ping" to { runCompanion(d, host, port, info.deviceId, "ping") },
+                "🔔 Найти" to { runCompanion(d, host, port, info.deviceId, "identify") }
+            )
+            if (info.actions.any { it.startsWith("brightness_") }) {
+                layout.addView(sectionTitle("ЯРКОСТЬ ЭКРАНА"))
+                addRemoteRow(layout,
+                    "☀ −" to { runCompanion(d, host, port, info.deviceId, "brightness_down") },
+                    "50%" to { runCompanion(d, host, port, info.deviceId, "brightness_50") },
+                    "☀ +" to { runCompanion(d, host, port, info.deviceId, "brightness_up") }
+                )
+            }
+            layout.addView(controlRow("🍎 Что доступно без iOS Companion") { showIosHelp(d) })
+        } else {
+            val actions = info.actions
+            val has = { action: String -> actions.isEmpty() || action in actions }
+            layout.addView(sectionTitle("ГРОМКОСТЬ И МЕДИА"))
+            addRemoteRow(layout,
+                "Vol −" to { if (has("volume_down")) runCompanion(d, host, port, info.deviceId, "volume_down") else toast("Companion не объявил эту команду") },
+                "Mute" to { if (has("mute")) runCompanion(d, host, port, info.deviceId, "mute") else toast("Companion не объявил эту команду") },
+                "Vol +" to { if (has("volume_up")) runCompanion(d, host, port, info.deviceId, "volume_up") else toast("Companion не объявил эту команду") }
+            )
+            addRemoteRow(layout,
+                "⏮" to { if (has("media_previous")) runCompanion(d, host, port, info.deviceId, "media_previous") else toast("Команда недоступна") },
+                "▶/Ⅱ" to { if (has("media_play_pause")) runCompanion(d, host, port, info.deviceId, "media_play_pause") else toast("Команда недоступна") },
+                "⏭" to { if (has("media_next")) runCompanion(d, host, port, info.deviceId, "media_next") else toast("Команда недоступна") }
+            )
+            layout.addView(sectionTitle("СИСТЕМНАЯ НАВИГАЦИЯ"))
+            layout.addView(text(
+                if (info.accessibility) "Accessibility Companion включён: Home/Back/Recents доступны." else "Home/Back/Recents требуют вручную включить Accessibility на управляемом Android. Companion не читает экран.",
+                12f, if (info.accessibility) c("#72F1CE") else c("#AABBD4"), false
+            ))
+            addRemoteRow(layout,
+                "⌂ Home" to { if (has("home")) runCompanion(d, host, port, info.deviceId, "home") else toast("Команда недоступна") },
+                "↩ Back" to { if (has("back")) runCompanion(d, host, port, info.deviceId, "back") else toast("Команда недоступна") },
+                "▣ Recents" to { if (has("recents")) runCompanion(d, host, port, info.deviceId, "recents") else toast("Команда недоступна") }
+            )
+        }
+        if (companion.isPaired(info.deviceId)) layout.addView(controlRow("Отозвать pairing этого устройства") {
+            status.text = "Отзываю pairing на управляемом устройстве…"
             companion.forget(host, port, info.deviceId) { result -> runOnUiThread {
                 status.text = result.message
                 toast(result.message)
             } }
         })
-        AlertDialog.Builder(this).setTitle("Android Companion • ${info.name}").setView(scroll).setNegativeButton("Закрыть", null).show()
+        val title = if (ios) "iOS/iPadOS Companion • ${info.name}" else "Android Companion • ${info.name}"
+        AlertDialog.Builder(this).setTitle(title).setView(scroll).setNegativeButton("Закрыть", null).show()
     }
 
     private fun runCompanion(d: NearbyDevice, host: String, port: Int, deviceId: String, action: String) {
@@ -1372,6 +1445,7 @@ class MainActivity : AppCompatActivity() {
     private fun showPairingInfo(d: NearbyDevice? = null) {
         val extra = when {
             d?.protocol?.contains("Matter", true) == true || d?.protocol?.contains("HomeKit", true) == true -> "\n\nMatter/HomeKit требуют штатного commissioning/pairing экосистемы; универсальный контроллер для них ещё не добавлен."
+            isAppleMobile(d ?: NearbyDevice("", "", "", "", "")) -> "\n\niPhone/iPad: без Companion доступны только штатно опубликованные Apple/Bonjour/MDM-функции. PIN/код блокировки не является сетевым паролем. Для Companion используйте добровольное pairing; iOS всё равно не разрешает системные Home/Back/касания стороннему приложению."
             d?.brand?.contains("Tuya", true) == true || d?.protocol?.contains("Tuya", true) == true -> "\n\nTuya/Smart Life требует локальный ключ или облачную авторизацию; обход авторизации не выполняется."
             d?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true -> "\n\nЭто объект Wi‑Fi эфира (SSID/BSSID). Видимый радиосигнал не означает, что к устройству можно отправлять LAN-команды."
             else -> ""
@@ -1432,9 +1506,9 @@ class MainActivity : AppCompatActivity() {
         "Свет" -> d.kind.contains("Лампа") || d.kind.contains("свет") || d.kind.contains("дом")
         "Компьютеры" -> d.kind.contains("Компьютер") || d.kind.contains("сервер")
         "Проекторы" -> d.kind.contains("Проектор")
-        "Телефоны" -> d.kind.contains("Телефон")
+        "Телефоны" -> d.kind.contains("Телефон") || d.kind.contains("iPhone", true) || d.kind.contains("iPad", true)
         "Принтеры" -> d.kind.contains("Принтер")
-        "Другие" -> listOf("ТВ", "Телевизор", "Колонка", "Аудио", "Наушники", "Лампа", "свет", "Компьютер", "сервер", "Проектор", "Телефон", "Принтер").none { d.kind.contains(it) }
+        "Другие" -> listOf("ТВ", "Телевизор", "Колонка", "Аудио", "Наушники", "Лампа", "свет", "Компьютер", "сервер", "Проектор", "Телефон", "iPhone", "iPad", "Принтер").none { d.kind.contains(it) }
         else -> true
     }
 
@@ -1449,6 +1523,7 @@ class MainActivity : AppCompatActivity() {
         ControlCapability.LIGHT_POWER -> "свет"
         ControlCapability.BRIGHTNESS -> "яркость"
         ControlCapability.COLOR -> "цвет"
+        ControlCapability.FIND_DEVICE -> "найти устройство"
     }
 
     private fun isInCurrentWifiSubnet(host: String): Boolean {

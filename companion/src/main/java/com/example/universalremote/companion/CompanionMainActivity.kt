@@ -48,7 +48,7 @@ class CompanionMainActivity : AppCompatActivity() {
             setPadding(32, 56, 32, 32)
             setBackgroundColor(Color.rgb(7, 17, 31))
         }
-        root.addView(label("UNIVERSALREMOTE COMPANION • v0.8.1", 13f, Color.rgb(101, 230, 196), true))
+        root.addView(label("UNIVERSALREMOTE COMPANION • v0.9.0", 13f, Color.rgb(101, 230, 196), true))
         root.addView(label("Этот телефон можно управлять только после явного сопряжения.", 20f, Color.WHITE, true).apply { setPadding(0, 22, 0, 18) })
         root.addView(label("Одноразовый код • действует 5 минут", 13f, Color.LTGRAY, false))
         code = label("———— ———— ————", 30f, Color.rgb(114, 241, 206), true).apply { setPadding(0, 8, 0, 12) }

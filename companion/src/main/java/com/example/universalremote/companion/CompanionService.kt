@@ -182,6 +182,8 @@ class CompanionService : Service() {
             // v2 exposes only a per-service-start advertisement ID before pairing.
             put("advertisementId", advertisementId)
             put("version", 2)
+            put("platform", "android")
+            put("actions", org.json.JSONArray(listOf("volume_down", "mute", "volume_up", "media_previous", "media_play_pause", "media_next", "home", "back", "recents", "ping")))
             put("accessibility", CompanionAccessibilityService.isEnabled())
             put("pairCodeExpiresIn", ((currentPairCodeExpiresAt - System.currentTimeMillis()).coerceAtLeast(0L) / 1000L))
             put("pairedControllers", pairedControllers.size)

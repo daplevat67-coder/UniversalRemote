@@ -1,3 +1,24 @@
+# Universal Remote 0.9.0 — iPhone / iPad support without fake “full control”
+
+## iOS / iPadOS в v0.9.0
+
+- Добавлено отдельное обнаружение Apple mobile services через Bonjour: `_companion-link._tcp`, `_apple-mobdev2._tcp`, `_device-info._tcp` и имя/бренд устройства. iPhone/iPad больше не должны маскироваться под generic network device, когда Apple публикует доступный сервис.
+- **Без приложения на iPhone/iPad** UniversalRemote показывает доступные Apple/Bonjour признаки и честно отделяет их от управления. PIN/код блокировки iPadOS не является сетевым credential. Для административных команд без Companion нужен штатный MDM enrollment и MDM-сервер.
+- Добавлен исходный проект **`ios-companion/`** для iPhone/iPad. Он использует тот же добровольный Companion v2 pairing: 5-минутный код, HMAC challenge-response, AES-GCM команды, 30-дневные отзываемые сессии.
+- iOS Companion объявляет `_uremote._tcp`, поэтому основной Android APK автоматически находит его и открывает iOS-режим пульта.
+- Реально доступные команды iOS Companion в этой версии: `Ping`, `Find/identify` (звук/отклик) и изменение яркости экрана, пока Companion активен. iOS sandbox **не разрешает** стороннему приложению эмулировать системные Home/Back/касания или управлять чужими приложениями по PIN экрана.
+- Локальный listener iOS может быть приостановлен, когда приложение уходит в фон. Проект не злоупотребляет background modes, чтобы притворяться постоянно работающим системным сервисом.
+- Для установки iOS Companion на физический iPhone/iPad нужна подпись Apple Developer Team/provisioning profile. Новый workflow `Check iOS Companion` на macOS делает unsigned Simulator compile-check, но не публикует неподписанный IPA как устанавливаемый файл.
+- Android Companion остаётся без изменений по модели доступа: громкость/media и Home/Back/Recents только после явного Accessibility разрешения.
+
+## Практический режим
+
+1. **iPad/iPhone без Companion:** запустить общий поиск; Apple Bonjour/MDM-capable признаки отображаются в отдельной карточке. Для полноценного fleet/admin управления используйте ваш MDM.
+2. **iPad/iPhone с Companion:** собрать/sign `ios-companion`, запустить его на iOS, затем в основном UniversalRemote открыть найденный iOS Companion и ввести одноразовый код.
+3. **Android:** использовать Android Companion APK или штатный протокол конкретного устройства.
+
+---
+
 # Universal Remote 0.8.1 — hardening Companion, discovery boundaries and first-use TLS
 
 ## Главное в v0.8.1

@@ -1,0 +1,31 @@
+name: Check iOS Companion
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - "ios-companion/**"
+      - ".github/workflows/build-ios-companion.yml"
+
+jobs:
+  compile:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        working-directory: ios-companion
+        run: xcodegen generate
+      - name: Compile for iOS Simulator (unsigned)
+        working-directory: ios-companion
+        run: |
+          xcodebuild \
+            -project UniversalRemoteIOSCompanion.xcodeproj \
+            -scheme UniversalRemoteIOSCompanion \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/ios-derived" \
+            CODE_SIGNING_ALLOWED=NO \
+            build

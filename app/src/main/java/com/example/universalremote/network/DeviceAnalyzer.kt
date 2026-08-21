@@ -73,6 +73,7 @@ class DeviceAnalyzer(context: Context) {
                 4352 in numbers -> "Проектор / embedded OS (PJLink)"
                 8001 in numbers && 8002 in numbers -> "Возможный Samsung Tizen TV (LAN remote ports)"
                 8008 in numbers || 8009 in numbers -> "Google Cast / Android-based media device (эвристика)"
+                62078 in numbers -> "Apple iOS/iPadOS/macOS Mobile Device service (эвристика)"
                 55443 in numbers -> "Yeelight / smart light (LAN Control)"
                 22 in numbers -> "Unix/Linux-like (SSH, эвристика)"
                 else -> null

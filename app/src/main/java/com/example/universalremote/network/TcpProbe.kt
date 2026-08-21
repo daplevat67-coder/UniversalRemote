@@ -15,7 +15,7 @@ object TcpProbe {
         5000 to "HTTP/UPnP", 5001 to "HTTPS/UPnP", 6466 to "Android TV Remote", 6467 to "Android TV Pairing",
         8001 to "Samsung Tizen Remote", 8002 to "Samsung Tizen Remote TLS", 8008 to "Google Cast HTTP",
         8009 to "Google Cast", 8060 to "Roku ECP", 8080 to "HTTP-alt", 8443 to "HTTPS-alt",
-        8883 to "MQTT TLS", 9100 to "JetDirect", 55443 to "Yeelight LAN Control"
+        8883 to "MQTT TLS", 9100 to "JetDirect", 55443 to "Yeelight LAN Control", 62078 to "Apple Mobile Device / Wi-Fi Sync"
     )
 
     fun isOpen(host: String, port: Int, timeoutMs: Int): Boolean = runCatching {

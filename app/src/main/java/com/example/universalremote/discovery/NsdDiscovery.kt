@@ -27,7 +27,8 @@ class NsdDiscovery(
     private val serviceTypes = listOf(
         "_uremote._tcp.", "_googlecast._tcp.", "_airplay._tcp.", "_raop._tcp.",
         "_androidtvremote2._tcp.", "_webos._tcp.", "_lge-app-remote._tcp.",
-        "_companion-link._tcp.", "_adb-tls-connect._tcp.", "_adb-tls-pairing._tcp.",
+        "_companion-link._tcp.", "_apple-mobdev2._tcp.", "_device-info._tcp.",
+        "_adb-tls-connect._tcp.", "_adb-tls-pairing._tcp.",
         "_hap._tcp.", "_matter._tcp.", "_matterc._udp.", "_matterd._udp.",
         "_ipp._tcp.", "_spotify-connect._tcp.", "_sonos._tcp.",
         "_philipshue._tcp.", "_hue._tcp.", "_wled._tcp.", "_roku._tcp.",
@@ -117,10 +118,13 @@ class NsdDiscovery(
         val typeLower = s.serviceType.lowercase()
         val nameLower = s.serviceName.lowercase()
         val companion = "_uremote" in typeLower
+        val companionPlatform = attrs["platform"]?.toString(Charsets.UTF_8)?.lowercase().orEmpty()
+        val iosCompanion = companion && companionPlatform == "ios"
         val sonos = "sonos" in typeLower
         val androidTv = "androidtvremote2" in typeLower
         val androidPhone = "adb-tls-connect" in typeLower || "adb-tls-pairing" in typeLower
-        val appleCompanion = "companion-link" in typeLower
+        val appleCompanion = "companion-link" in typeLower || "apple-mobdev2" in typeLower || "device-info" in typeLower
+        val appleMobileByName = listOf("iphone", "ipad", "ipod").any { it in nameLower }
         val roku = "roku" in typeLower
         val wled = "wled" in typeLower
         val cast = "googlecast" in typeLower
@@ -128,10 +132,11 @@ class NsdDiscovery(
         val webos = "webos" in typeLower || "lge-app-remote" in typeLower || ("lg" in nameLower && "tv" in nameLower)
         val companionId = attrs["id"]?.toString(Charsets.UTF_8)?.take(80)
         val protocol = when {
-            companion -> "UniversalRemote Companion v2"
+            iosCompanion -> "UniversalRemote Companion v2 • iOS/iPadOS"
+            companion -> "UniversalRemote Companion v2 • Android"
             androidTv -> "Android TV Remote Service v2"
             androidPhone -> "Android mDNS / ADB TLS advertisement"
-            appleCompanion -> "Apple Companion Link mDNS"
+            appleCompanion -> "Apple Bonjour / Mobile Device service"
             roku -> "Roku ECP"
             wled -> "WLED JSON API"
             cast -> "Google Cast v2"
@@ -144,12 +149,16 @@ class NsdDiscovery(
             NearbyDevice(
                 id = "mdns:${s.serviceType}:${s.serviceName}:$host",
                 name = s.serviceName.ifBlank { info.first },
-                kind = info.first,
+                kind = when {
+                    iosCompanion -> "iPhone / iPad (iOS Companion)"
+                    appleCompanion || appleMobileByName -> if ("ipad" in nameLower) "iPad / Apple устройство" else if ("iphone" in nameLower) "iPhone / Apple устройство" else "iPhone / iPad / Apple устройство"
+                    else -> info.first
+                },
                 protocol = protocol,
                 address = "$host:${s.port}",
                 controllable = companion || androidTv || roku || wled || cast || hue || webos || (sonos && location != null),
-                brand = info.second,
-                capabilities = info.third,
+                brand = when { iosCompanion -> "Apple / UniversalRemote iOS Companion"; appleCompanion || appleMobileByName -> "Apple"; else -> info.second },
+                capabilities = when { iosCompanion -> setOf(ControlCapability.FIND_DEVICE); else -> info.third },
                 descriptionUrl = location,
                 ipAddress = host,
                 companionId = companionId
@@ -173,9 +182,9 @@ class NsdDiscovery(
         val t = type.lowercase()
         val n = name.lowercase()
         return when {
-            "_uremote" in t -> Triple("Телефон / планшет (Companion)", "UniversalRemote Companion", setOf(ControlCapability.VOLUME, ControlCapability.MUTE, ControlCapability.MEDIA, ControlCapability.NAVIGATION))
+            "_uremote" in t -> Triple("Телефон / планшет (Companion)", "UniversalRemote Companion", emptySet())
             "adb-tls" in t -> Triple("Телефон / планшет (Android)", "Android", emptySet())
-            "companion-link" in t -> Triple("Телефон / планшет / Apple устройство", "Apple", emptySet())
+            "companion-link" in t || "apple-mobdev2" in t || "device-info" in t || "iphone" in n || "ipad" in n -> Triple("iPhone / iPad / Apple устройство", "Apple", emptySet())
             "androidtv" in t -> Triple("Телевизор / Android TV", "Android TV", tvCaps())
             "webos" in t || "lge-app-remote" in t -> Triple("Телевизор / LG webOS", "LG", tvCaps())
             "googlecast" in t -> Triple("ТВ / медиаплеер", "Google Cast", setOf(ControlCapability.VOLUME, ControlCapability.MUTE, ControlCapability.MEDIA))

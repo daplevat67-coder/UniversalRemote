@@ -31,7 +31,9 @@ class CompanionController(context: Context) {
         val advertisementId: String,
         val accessibility: Boolean,
         val version: Int,
-        val pairCodeExpiresIn: Long
+        val pairCodeExpiresIn: Long,
+        val platform: String = "android",
+        val actions: Set<String> = emptySet()
     )
 
     private val appContext = context.applicationContext
@@ -62,7 +64,12 @@ class CompanionController(context: Context) {
                             Info(
                                 json.optString("name", "Android Companion"), stable, adId,
                                 json.optBoolean("accessibility"), json.optInt("version", 2),
-                                json.optLong("pairCodeExpiresIn", 0L)
+                                json.optLong("pairCodeExpiresIn", 0L),
+                                json.optString("platform", "android").lowercase(),
+                                buildSet {
+                                    val array = json.optJSONArray("actions")
+                                    if (array != null) for (i in 0 until array.length()) array.optString(i).takeIf { it.isNotBlank() }?.let { add(it) }
+                                }
                             )
                         }
                     }
@@ -127,7 +134,7 @@ class CompanionController(context: Context) {
                                     store.putString(hostMapKey(host, port), stableId)
                                     parsed.optLong("sessionExpiresAt", 0L).takeIf { it > 0 }?.let { store.putString(expiryKey(stableId), it.toString()) }
                                     sessionKey.fill(0)
-                                    callback(Result(true, "Companion сопряжён; серверный revoke и срок сессии включены.", Info("Android Companion", stableId, advertisementId, false, 2, 0L)))
+                                    callback(Result(true, "Companion сопряжён; серверный revoke и срок сессии включены.", Info("Companion", stableId, advertisementId, false, 2, 0L)))
                                 } else {
                                     sessionKey.fill(0)
                                     callback(Result(false, parsed?.optString("message").takeUnless { it.isNullOrBlank() } ?: "Неверный/истёкший pairing-код"))

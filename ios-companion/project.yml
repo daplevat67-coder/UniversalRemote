@@ -1,0 +1,24 @@
+name: UniversalRemoteIOSCompanion
+options:
+  bundleIdPrefix: com.example.universalremote
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  UniversalRemoteIOSCompanion:
+    type: application
+    platform: iOS
+    sources:
+      - UniversalRemoteIOSCompanion
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.universalremote.ioscompanion
+        PRODUCT_NAME: UniversalRemote iOS Companion
+        SWIFT_VERSION: 5.9
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+        CURRENT_PROJECT_VERSION: 13
+        MARKETING_VERSION: 0.9.0
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: UniversalRemoteIOSCompanion/Info.plist
+    scheme:
+      testTargets: []

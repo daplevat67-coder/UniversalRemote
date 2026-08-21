@@ -106,7 +106,7 @@ class DeviceAdapter(
             kind.contains("Лампа") || kind.contains("свет") || kind.contains("дом") -> R.drawable.ic_device_light
             kind.contains("Проектор") -> R.drawable.ic_device_projector
             kind.contains("Компьютер") -> R.drawable.ic_device_computer
-            kind.contains("Телефон") -> R.drawable.ic_device_phone
+            kind.contains("Телефон") || kind.contains("iPhone", true) || kind.contains("iPad", true) -> R.drawable.ic_device_phone
             kind.contains("Колонка") || kind.contains("Аудио") || kind.contains("Наушники") -> R.drawable.ic_device_speaker
             kind.contains("Принтер") -> R.drawable.ic_device_printer
             kind.contains("Часы") -> R.drawable.ic_device_watch

@@ -10,5 +10,6 @@ enum class ControlCapability {
     INPUT,
     LIGHT_POWER,
     BRIGHTNESS,
-    COLOR
+    COLOR,
+    FIND_DEVICE
 }

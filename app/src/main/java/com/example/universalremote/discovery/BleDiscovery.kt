@@ -116,7 +116,7 @@ class BleDiscovery(
             listOf("buds", "headphone", "headset", "airpods").any { it in n } -> "Наушники"
             listOf("desktop", "laptop", "pc-", "macbook", "computer").any { it in n } -> "Компьютер"
             listOf("watch", "band", "fitbit").any { it in n } -> "Часы / браслет"
-            listOf("phone", "iphone", "galaxy", "redmi", "pixel").any { it in n } -> "Телефон"
+            listOf("phone", "iphone", "ipad", "galaxy", "redmi", "pixel").any { it in n } -> "Телефон"
             listOf("keyboard", "mouse", "gamepad", "controller").any { it in n } -> "Аксессуар"
             listOf("printer", "epson", "canon", "deskjet").any { it in n } -> "Принтер"
             else -> "Bluetooth-устройство"
