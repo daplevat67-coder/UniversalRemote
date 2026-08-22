@@ -7,7 +7,10 @@ import android.content.Intent
 import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.LinkAddress
+import android.net.LinkProperties
+import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
@@ -41,6 +44,7 @@ class CompanionService : Service() {
         ThreadPoolExecutor.AbortPolicy()
     )
     private val challenges = ConcurrentHashMap<String, Challenge>()
+    private val challengeAttempts = ConcurrentHashMap<String, ArrayDeque<Long>>()
     private val pairAttempts = ConcurrentHashMap<String, ArrayDeque<Long>>()
     private val replayNonces = ConcurrentHashMap<String, Long>()
     private lateinit var secureStore: CompanionSecureStore
@@ -50,8 +54,17 @@ class CompanionService : Service() {
     private var server: ServerSocket? = null
     private var serverThread: Thread? = null
     private var registration: NsdManager.RegistrationListener? = null
+    private val serverLock = Any()
+    @Volatile private var serverAddress: String? = null
+    @Volatile private var serverGeneration = 0L
     private lateinit var deviceId: String
     private lateinit var advertisementId: String
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = scheduleServerRefresh()
+        override fun onLost(network: Network) = scheduleServerRefresh()
+        override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) = scheduleServerRefresh()
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -67,7 +80,13 @@ class CompanionService : Service() {
         rotatePairCode()
         refreshPairedSnapshot()
         startForeground(NOTIFICATION_ID, notification("Готов к сопряжению"))
-        startServer()
+        runCatching {
+            connectivity.registerNetworkCallback(
+                NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(),
+                networkCallback
+            )
+        }
+        restartServerIfNeeded(force = true)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -77,6 +96,7 @@ class CompanionService : Service() {
             ACTION_REVOKE_ALL -> revokeAllControllers()
             ACTION_STOP -> stopSelf()
         }
+        restartServerIfNeeded(force = false)
         updateNotification()
         return START_STICKY
     }
@@ -84,12 +104,17 @@ class CompanionService : Service() {
     override fun onDestroy() {
         currentPairCode = null
         currentPairCodeExpiresAt = 0L
-        registration?.let { runCatching { nsd.unregisterService(it) } }
-        registration = null
-        runCatching { server?.close() }
-        server = null
-        serverThread?.interrupt()
-        serverThread = null
+        runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
+        synchronized(serverLock) {
+            serverGeneration++
+            registration?.let { runCatching { nsd.unregisterService(it) } }
+            registration = null
+            runCatching { server?.close() }
+            server = null
+            serverAddress = null
+            serverThread?.interrupt()
+            serverThread = null
+        }
         workers.shutdownNow()
         pairedControllers = emptyList()
         super.onDestroy()
@@ -97,32 +122,62 @@ class CompanionService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun startServer() {
+    private fun scheduleServerRefresh() {
+        Thread {
+            runCatching { Thread.sleep(150) }
+            restartServerIfNeeded(force = false)
+        }.apply { isDaemon = true; name = "uremote-companion-rebind"; start() }
+    }
+
+    private fun restartServerIfNeeded(force: Boolean) {
         val wifiAddress = currentWifiLinks().firstOrNull()?.address as? Inet4Address
-        if (wifiAddress == null) {
-            currentStatus = "Нет активного Wi-Fi IPv4 — Companion не слушает сеть"
-            updateNotification()
-            return
-        }
-        serverThread = Thread({ runServer(wifiAddress) }, "uremote-companion-accept").apply {
-            isDaemon = true
-            start()
+        val nextAddress = wifiAddress?.hostAddress
+        synchronized(serverLock) {
+            if (!force && nextAddress == serverAddress && server?.isClosed == false) return
+            val generation = ++serverGeneration
+            registration?.let { runCatching { nsd.unregisterService(it) } }
+            registration = null
+            runCatching { server?.close() }
+            server = null
+            serverThread?.interrupt()
+            serverThread = null
+            serverAddress = nextAddress
+
+            if (wifiAddress == null) {
+                currentStatus = "Нет активного Wi-Fi IPv4 — Companion не слушает сеть"
+                updateNotification()
+                return
+            }
+
+            advertisementId = UUID.randomUUID().toString()
+            serverThread = Thread({ runServer(wifiAddress, generation) }, "uremote-companion-accept").apply {
+                isDaemon = true
+                start()
+            }
         }
     }
 
-    private fun runServer(wifiAddress: Inet4Address) {
+    private fun runServer(wifiAddress: Inet4Address, generation: Long) {
         val socketResult = runCatching { ServerSocket(PORT, SERVER_BACKLOG, wifiAddress) }
         if (socketResult.isFailure) {
-            currentStatus = "Порт $PORT занят/недоступен: ${socketResult.exceptionOrNull()?.message}"
-            updateNotification()
+            if (generation == serverGeneration) {
+                currentStatus = "Порт $PORT занят/недоступен: ${socketResult.exceptionOrNull()?.message}"
+                updateNotification()
+            }
             return
         }
         val socket = socketResult.getOrThrow()
-        server = socket
+        synchronized(serverLock) {
+            if (generation != serverGeneration) {
+                runCatching { socket.close() }
+                return
+            }
+            server = socket
+        }
         currentStatus = "Wi-Fi ${wifiAddress.hostAddress}:$PORT"
         registerNsd(PORT)
         updateNotification()
-        while (!socket.isClosed && !Thread.currentThread().isInterrupted) {
+        while (generation == serverGeneration && !socket.isClosed && !Thread.currentThread().isInterrupted) {
             val client = runCatching { socket.accept() }.getOrNull() ?: break
             try {
                 workers.execute { handle(client) }
@@ -137,7 +192,6 @@ class CompanionService : Service() {
             serviceName = "UniversalRemote ${Build.MODEL}"
             serviceType = SERVICE_TYPE
             this.port = port
-            // Ephemeral advertisement identifier; the stable device ID is not broadcast in mDNS.
             setAttribute("id", advertisementId)
             setAttribute("model", Build.MODEL.take(40))
             setAttribute("v", "2")
@@ -179,7 +233,6 @@ class CompanionService : Service() {
         return HttpResponse(200, JSONObject().apply {
             put("ok", true)
             put("name", "${Build.MANUFACTURER} ${Build.MODEL}".trim())
-            // v2 exposes only a per-service-start advertisement ID before pairing.
             put("advertisementId", advertisementId)
             put("version", 2)
             put("platform", "android")
@@ -193,6 +246,10 @@ class CompanionService : Service() {
     private fun challengeResponse(remote: String): HttpResponse {
         cleanupState()
         ensurePairCode()
+        if (!allowAttempt(challengeAttempts, remote, CHALLENGE_WINDOW_MS, MAX_CHALLENGE_ATTEMPTS)) {
+            return HttpResponse(429, json(false, "Слишком много запросов pairing challenge; повторите позже"))
+        }
+        challenges.entries.removeIf { it.value.remote == remote }
         if (challenges.size >= MAX_CHALLENGES) return HttpResponse(429, json(false, "Слишком много незавершённых pairing challenge"))
         val id = randomToken(18)
         val nonce = randomBytes(32)
@@ -242,7 +299,6 @@ class CompanionService : Service() {
         return HttpResponse(200, JSONObject().apply {
             put("ok", true)
             put("message", "Сопряжение разрешено")
-            // Stable ID is revealed only after proof of the on-screen pairing code.
             put("deviceId", deviceId)
             put("sessionExpiresAt", expiresAt)
         }.toString())
@@ -321,14 +377,32 @@ class CompanionService : Service() {
         true
     }.getOrDefault(false)
 
-    private fun allowPairAttempt(remote: String): Boolean {
+    private fun allowPairAttempt(remote: String): Boolean =
+        allowAttempt(pairAttempts, remote, PAIR_WINDOW_MS, MAX_PAIR_ATTEMPTS)
+
+    private fun allowAttempt(
+        table: ConcurrentHashMap<String, ArrayDeque<Long>>,
+        remote: String,
+        windowMs: Long,
+        limit: Int
+    ): Boolean {
         val now = System.currentTimeMillis()
-        val q = pairAttempts.computeIfAbsent(remote) { ArrayDeque() }
+        val q = table.computeIfAbsent(remote) { ArrayDeque() }
         synchronized(q) {
-            while (q.isNotEmpty() && now - q.first() > PAIR_WINDOW_MS) q.removeFirst()
-            if (q.size >= MAX_PAIR_ATTEMPTS) return false
+            while (q.isNotEmpty() && now - q.first() > windowMs) q.removeFirst()
+            if (q.size >= limit) return false
             q.addLast(now)
             return true
+        }
+    }
+
+    private fun cleanupAttempts(table: ConcurrentHashMap<String, ArrayDeque<Long>>, windowMs: Long, now: Long) {
+        table.entries.toList().forEach { entry ->
+            val empty = synchronized(entry.value) {
+                while (entry.value.isNotEmpty() && now - entry.value.first() > windowMs) entry.value.removeFirst()
+                entry.value.isEmpty()
+            }
+            if (empty) table.remove(entry.key, entry.value)
         }
     }
 
@@ -336,15 +410,8 @@ class CompanionService : Service() {
         val now = System.currentTimeMillis()
         challenges.entries.removeIf { it.value.expiresAt < now }
         replayNonces.entries.removeIf { now - it.value > 300_000L }
-        pairAttempts.entries.toList().forEach { entry ->
-            val empty = synchronized(entry.value) {
-                while (entry.value.isNotEmpty() && now - entry.value.first() > PAIR_WINDOW_MS) {
-                    entry.value.removeFirst()
-                }
-                entry.value.isEmpty()
-            }
-            if (empty) pairAttempts.remove(entry.key, entry.value)
-        }
+        cleanupAttempts(challengeAttempts, CHALLENGE_WINDOW_MS, now)
+        cleanupAttempts(pairAttempts, PAIR_WINDOW_MS, now)
         if (currentPairCodeExpiresAt in 1..now) rotatePairCode()
     }
 
@@ -428,7 +495,7 @@ class CompanionService : Service() {
             if (b == '\n'.code) return out.toString()
             if (b != '\r'.code) out.append(b.toChar())
         }
-        return null // fail closed if the line is not terminated before the bound
+        return null
     }
 
     private fun writeResponse(out: BufferedOutputStream, response: HttpResponse) {
@@ -508,6 +575,8 @@ class CompanionService : Service() {
         private const val NOTIFICATION_ID = 8001
         private const val PAIR_CODE_TTL_MS = 5 * 60_000L
         private const val CHALLENGE_MS = 90_000L
+        private const val CHALLENGE_WINDOW_MS = 60_000L
+        private const val MAX_CHALLENGE_ATTEMPTS = 5
         private const val SESSION_TTL_MS = 30L * 24L * 60L * 60L * 1000L
         private const val COMMAND_SKEW_MS = 90_000L
         private const val PAIR_WINDOW_MS = 60_000L
