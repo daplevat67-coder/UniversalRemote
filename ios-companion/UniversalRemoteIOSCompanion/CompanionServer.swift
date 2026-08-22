@@ -5,6 +5,7 @@ import UIKit
 import AudioToolbox
 import CryptoKit
 import Security
+import Darwin
 
 final class CompanionServer: ObservableObject {
     struct PairedController: Identifiable {
@@ -75,12 +76,20 @@ private final class ServerCore: @unchecked Sendable {
     private let store = KeychainStore()
     private var listener: NWListener?
     private var challenges: [String: Challenge] = [:]
+    private var challengeAttempts: [String: [Date]] = [:]
+    private var pairAttempts: [String: [Date]] = [:]
     private var replay: [String: Date] = [:]
     private var pairCode = ""
     private var pairCodeExpiry = Date.distantPast
     private let deviceId: String
     private var advertisementId = UUID().uuidString
     private let deviceName: String
+
+    private let challengeWindow: TimeInterval = 60
+    private let maxChallengeAttempts = 5
+    private let pairWindow: TimeInterval = 60
+    private let maxPairAttempts = 5
+    private let maxChallenges = 32
 
     init() {
         deviceName = UIDevice.current.name
@@ -127,7 +136,15 @@ private final class ServerCore: @unchecked Sendable {
     }
 
     func stop() { queue.async { self.stopLocked() } }
-    private func stopLocked() { listener?.cancel(); listener = nil; challenges.removeAll(); replay.removeAll(); onState?(false, "Остановлен") }
+    private func stopLocked() {
+        listener?.cancel()
+        listener = nil
+        challenges.removeAll()
+        challengeAttempts.removeAll()
+        pairAttempts.removeAll()
+        replay.removeAll()
+        onState?(false, "Остановлен")
+    }
 
     func rotatePairCode() { queue.async { self.rotatePairCodeLocked() } }
     private func rotatePairCodeLocked() {
@@ -157,14 +174,21 @@ private final class ServerCore: @unchecked Sendable {
     }
 
     private func accept(_ connection: NWConnection) {
-        let remote = String(describing: connection.endpoint)
+        guard let remote = remoteIPv4(connection.endpoint) else {
+            connection.cancel()
+            return
+        }
         var started = false
         connection.stateUpdateHandler = { [weak self, weak connection] state in
             guard let self, let connection else { return }
             switch state {
             case .ready where !started:
                 started = true
-                guard connection.currentPath?.usesInterfaceType(.wifi) == true else { connection.cancel(); return }
+                guard connection.currentPath?.usesInterfaceType(.wifi) == true,
+                      self.isCurrentWifiPeer(remote) else {
+                    connection.cancel()
+                    return
+                }
                 self.receive(connection, remote: remote, buffer: Data(), deadline: Date().addingTimeInterval(4))
             case .failed, .cancelled:
                 connection.cancel()
@@ -226,8 +250,18 @@ private final class ServerCore: @unchecked Sendable {
             ]
             return (200, json(obj))
         case ("GET", "/v2/challenge"):
-            guard Date() < pairCodeExpiry else { rotatePairCodeLocked(); return (409, json(["ok": false, "message": "Pairing-код обновлён; используйте новый код с экрана iPhone/iPad"])) }
-            guard challenges.count < 32 else { return (429, json(["ok": false, "message": "Слишком много pairing challenge"])) }
+            guard Date() < pairCodeExpiry else {
+                rotatePairCodeLocked()
+                return (409, json(["ok": false, "message": "Pairing-код обновлён; используйте новый код с экрана iPhone/iPad"]))
+            }
+            guard allowAttempt(remote: remote, table: &challengeAttempts, window: challengeWindow, limit: maxChallengeAttempts) else {
+                return (429, json(["ok": false, "message": "Слишком много запросов pairing challenge; повторите позже"]))
+            }
+            // One active challenge per IP prevents one peer from exhausting the global pool.
+            challenges = challenges.filter { $0.value.remote != remote }
+            guard challenges.count < maxChallenges else {
+                return (429, json(["ok": false, "message": "Слишком много pairing challenge"]))
+            }
             let id = randomToken(18), nonce = randomData(32)
             challenges[id] = Challenge(remote: remote, nonce: nonce, expiresAt: Date().addingTimeInterval(90))
             return (200, json(["ok": true, "challenge": id, "serverNonce": nonce.base64EncodedString(), "advertisementId": advertisementId, "expiresIn": 90]))
@@ -246,18 +280,24 @@ private final class ServerCore: @unchecked Sendable {
     }
 
     private func pair(_ body: String, remote: String) -> (Int, String) {
+        guard allowAttempt(remote: remote, table: &pairAttempts, window: pairWindow, limit: maxPairAttempts) else {
+            return (429, json(["ok": false, "message": "Слишком много попыток pairing; повторите позже"]))
+        }
         guard Date() < pairCodeExpiry,
               let data = body.data(using: .utf8),
               let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let challengeId = o["challenge"] as? String,
               let clientNonceText = o["clientNonce"] as? String,
               let proofText = o["proof"] as? String,
-              let clientId = o["clientId"] as? String,
-              let clientName = o["clientName"] as? String,
+              let clientIdRaw = o["clientId"] as? String,
+              let clientNameRaw = o["clientName"] as? String,
               let challenge = challenges.removeValue(forKey: challengeId),
               challenge.remote == remote, challenge.expiresAt > Date(),
               let proof = Data(base64Encoded: proofText)
         else { return (401, json(["ok": false, "message": "Pairing-код/challenge недействителен"])) }
+        let clientId = String(clientIdRaw.prefix(80))
+        let clientName = String(clientNameRaw.prefix(80))
+        guard !clientId.isEmpty else { return (400, json(["ok": false, "message": "Некорректный clientId"])) }
         let serverNonce = challenge.nonce.base64EncodedString()
         let codeBytes = Data(pairCode.utf8)
         let transcript = "pair\n\(challengeId)\n\(serverNonce)\n\(clientNonceText)\n\(clientId)\n\(clientName)"
@@ -267,7 +307,7 @@ private final class ServerCore: @unchecked Sendable {
         let session = CompanionCrypto.hmac(key: codeBytes, text: sessionTranscript)
         let expiry = Date().addingTimeInterval(30 * 24 * 60 * 60)
         store.put("session_\(clientId)", data: session)
-        store.putString("name_\(clientId)", String(clientName.prefix(80)))
+        store.putString("name_\(clientId)", clientName)
         store.putString("expiry_\(clientId)", String(Int64(expiry.timeIntervalSince1970 * 1000)))
         rotatePairCodeLocked(); refreshPaired()
         return (200, json(["ok": true, "message": "iOS Companion сопряжён", "deviceId": deviceId, "sessionExpiresAt": Int64(expiry.timeIntervalSince1970 * 1000)]))
@@ -325,14 +365,76 @@ private final class ServerCore: @unchecked Sendable {
         let now = Date()
         challenges = challenges.filter { $0.value.expiresAt > now }
         replay = replay.filter { now.timeIntervalSince($0.value) < 300 }
+        cleanupAttempts(&challengeAttempts, now: now, window: challengeWindow)
+        cleanupAttempts(&pairAttempts, now: now, window: pairWindow)
         if now >= pairCodeExpiry { rotatePairCodeLocked() }
         refreshPaired()
     }
 
+    private func allowAttempt(remote: String, table: inout [String: [Date]], window: TimeInterval, limit: Int) -> Bool {
+        let now = Date()
+        var recent = table[remote, default: []].filter { now.timeIntervalSince($0) < window }
+        guard recent.count < limit else {
+            table[remote] = recent
+            return false
+        }
+        recent.append(now)
+        table[remote] = recent
+        return true
+    }
+
+    private func cleanupAttempts(_ table: inout [String: [Date]], now: Date, window: TimeInterval) {
+        for key in Array(table.keys) {
+            let recent = table[key, default: []].filter { now.timeIntervalSince($0) < window }
+            if recent.isEmpty { table.removeValue(forKey: key) } else { table[key] = recent }
+        }
+    }
+
+    private func remoteIPv4(_ endpoint: NWEndpoint) -> String? {
+        guard case let .hostPort(host, _) = endpoint else { return nil }
+        let value = String(describing: host)
+        var addr = in_addr()
+        return inet_pton(AF_INET, value, &addr) == 1 ? value : nil
+    }
+
+    private func isCurrentWifiPeer(_ remote: String) -> Bool {
+        var remoteAddr = in_addr()
+        guard inet_pton(AF_INET, remote, &remoteAddr) == 1 else { return false }
+
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0, let first = head else { return false }
+        defer { freeifaddrs(head) }
+
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let current = cursor {
+            let item = current.pointee
+            defer { cursor = item.ifa_next }
+            guard let address = item.ifa_addr,
+                  Int32(address.pointee.sa_family) == AF_INET,
+                  let maskAddress = item.ifa_netmask else { continue }
+            let name = String(cString: item.ifa_name)
+            // On iPhone/iPad the infrastructure Wi-Fi interface is en0. Exclude AWDL/cellular/VPN interfaces.
+            guard name == "en0" else { continue }
+            let local = UnsafeRawPointer(address).assumingMemoryBound(to: sockaddr_in.self).pointee.sin_addr.s_addr
+            let mask = UnsafeRawPointer(maskAddress).assumingMemoryBound(to: sockaddr_in.self).pointee.sin_addr.s_addr
+            if (local & mask) == (remoteAddr.s_addr & mask) { return true }
+        }
+        return false
+    }
+
     private func httpResponse(code: Int, body: String) -> Data {
-        let reason = code == 200 ? "OK" : (code == 401 ? "Unauthorized" : "Error")
+        let reason: String
+        switch code {
+        case 200: reason = "OK"
+        case 400: reason = "Bad Request"
+        case 401: reason = "Unauthorized"
+        case 404: reason = "Not Found"
+        case 409: reason = "Conflict"
+        case 429: reason = "Too Many Requests"
+        default: reason = "Error"
+        }
         let bytes = Data(body.utf8)
-        let head = "HTTP/1.1 \(code) \(reason)\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: \(bytes.count)\r\nConnection: close\r\n\r\n"
+        let head = "HTTP/1.1 \(code) \(reason)\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: \(bytes.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
         var result = Data(head.utf8)
         result.append(bytes)
         return result
