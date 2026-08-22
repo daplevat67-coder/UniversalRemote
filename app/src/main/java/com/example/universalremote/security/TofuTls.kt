@@ -1,5 +1,6 @@
 package com.example.universalremote.security
 
+import android.net.Network
 import okhttp3.Response
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -46,8 +47,11 @@ class TofuTls(private val store: SecureStore, private val keyPrefix: String) {
         return SSLContext.getInstance("TLS").apply { init(null, arrayOf<TrustManager>(trust), SecureRandom()) }
     }
 
-    /** Observe a certificate without sending any application-level credential or request payload. */
-    fun inspectFingerprint(host: String, port: Int, timeoutMs: Int = 2500): String {
+    fun inspectFingerprint(host: String, port: Int, timeoutMs: Int = 2500): String =
+        inspectFingerprint(null, host, port, timeoutMs)
+
+    /** Observe a certificate over the selected physical Network without sending application credentials. */
+    fun inspectFingerprint(network: Network?, host: String, port: Int, timeoutMs: Int = 2500): String {
         require(port in 1..65535) { "Некорректный TLS-порт" }
         val permissive = object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
@@ -55,7 +59,7 @@ class TofuTls(private val store: SecureStore, private val keyPrefix: String) {
             override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
         }
         val context = SSLContext.getInstance("TLS").apply { init(null, arrayOf<TrustManager>(permissive), SecureRandom()) }
-        val raw = Socket()
+        val raw: Socket = network?.socketFactory?.createSocket() ?: Socket()
         raw.connect(InetSocketAddress(host, port), timeoutMs.coerceIn(500, 5000))
         raw.soTimeout = timeoutMs.coerceIn(500, 5000)
         val tls = context.socketFactory.createSocket(raw, host, port, true) as SSLSocket
