@@ -16,7 +16,7 @@ import java.net.NetworkInterface
  * Some Android/OEM builds do not expose the underlying Wi-Fi Network through ConnectivityManager
  * while a VPN is active. Discovery therefore has three layers:
  *  1) ConnectivityManager Wi-Fi Network (best: sockets can be explicitly bound),
- *  2) a real wlan*/wifi* interface with a private IPv4,
+ *  2) a real wlan* or wifi* interface with a private IPv4,
  *  3) WifiManager DHCP information as a last-resort LAN snapshot.
  */
 object WifiNetworkResolver {
