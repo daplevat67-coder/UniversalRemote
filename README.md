@@ -1,4 +1,23 @@
-# Universal Remote 0.9.0 — iPhone / iPad support without fake “full control”
+# Universal Remote 0.9.2 — APK + signed IPA from GitHub Actions
+
+- Android workflow now publishes clearly named installable APK artifacts for the main remote and Android Companion.
+- iOS workflow still performs an unsigned Simulator compile-check on every relevant push.
+- When Apple signing secrets are configured, the same workflow creates `UniversalRemote-iOS-Companion-v0.9.2.ipa`.
+- A manual iOS workflow run can upload the signed IPA to TestFlight using an App Store Connect API key.
+- Full no-PC/iPad instructions are in `BUILD_FROM_IPAD_NO_PC.md`.
+
+---
+
+# Universal Remote 0.9.1 — iPhone / iPad support without fake “full control”
+
+## v0.9.1 — TV power + remote detection fix
+
+- TV-пульты Samsung/LG/Roku получили отдельную заметную кнопку `⏻ ВЫКЛЮЧИТЬ TV`; Android TV получил отдельную кнопку питания с предупреждением, что на части моделей POWER является toggle.
+- Google Cast больше не перехватывает карточку только из-за mDNS: если TCP 8009 не отвечает, Cast-кандидат отклоняется и интерфейс показывает результат проверки других API.
+- Ошибка TLS/handshake Cast теперь возвращается в общий результат автоопределения вместо зависания на «Получаю TLS fingerprint Cast…».
+- Wake-on-LAN не показывается в карточке, если MAC-адрес неизвестен.
+- Чистый Google Cast v2 не получает фиктивную кнопку выключения: универсальной команды power-off в Cast receiver protocol нет.
+
 
 ## iOS / iPadOS в v0.9.0
 

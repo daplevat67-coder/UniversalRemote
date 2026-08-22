@@ -147,7 +147,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(26), dp(18), dp(14))
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c("#07111F"), c("#101B35"), c("#132842")))
         }
-        root.addView(text("UNIVERSAL REMOTE • v0.9.0", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+        root.addView(text("UNIVERSAL REMOTE • v0.9.2", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
         root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
         root.addView(text("Двухфазный LAN-поиск • Android + iOS/iPadOS Companion • Apple/Bonjour • API verification • TV • Cast • Hue • Yeelight • WLED", 13f, c("#AABBD4"), false))
 
@@ -455,7 +455,7 @@ class MainActivity : AppCompatActivity() {
         val analyzeButton = controlRow("↻ Повторить сетевой анализ") { analyzeDevice(currentDevice(initial.id), details) }
         layout.addView(analyzeButton)
         val wolButton = controlRow("⚡ Wake-on-LAN") { sendWake(currentDevice(initial.id)) }
-        layout.addView(wolButton)
+        if (currentDevice(initial.id).macAddress != null) layout.addView(wolButton)
         val healthButton = controlRow("🧪 Проверить стабильность службы") { runHealthProbe(currentDevice(initial.id)) }
         layout.addView(healthButton)
         val controlTestButton = controlRow("🧭 ОПРЕДЕЛИТЬ РЕАЛЬНЫЙ ПУЛЬТ") { detectAndOpenRemote(currentDevice(initial.id)) }
@@ -476,7 +476,7 @@ class MainActivity : AppCompatActivity() {
         dialog.setOnShowListener {
             if (hostOf(d0.address) != null || d0.ipAddress != null) analyzeDevice(d0, details)
             else analyzeButton.isEnabled = false
-            wolButton.isEnabled = hostOf(d0.address) != null || d0.ipAddress != null
+            wolButton.isEnabled = d0.macAddress != null && (hostOf(d0.address) != null || d0.ipAddress != null)
             healthButton.isEnabled = hostOf(d0.address) != null || d0.ipAddress != null
             controlTestButton.isEnabled = hostOf(d0.address) != null || d0.ipAddress != null
         }
@@ -750,14 +750,15 @@ class MainActivity : AppCompatActivity() {
                                                 runOnUiThread { markVerified(d.id); showYeelightRemote(d, host, yeelightPort(d)) }
                                             } else {
                                                 errors += "Yeelight: ${yeelightResult.message}"
-                                                if (!cast.isTlsTrusted(host)) {
-                                                    runOnUiThread { probeAndShowCast(d, host) }
-                                                } else cast.probe(host) { castResult ->
-                                                    if (castResult.ok) {
-                                                        runOnUiThread { markVerified(d.id); showCastRemote(d, host) }
-                                                    } else {
-                                                        errors += "Cast: ${castResult.message}"
-                                                        runOnUiThread { showNoControlFound(d, host, errors) }
+                                                if (8009 !in ports) {
+                                                    errors += "Cast: mDNS-кандидат отклонён — TCP 8009 не отвечает"
+                                                    runOnUiThread { showNoControlFound(d, host, errors) }
+                                                } else {
+                                                    runOnUiThread {
+                                                        probeAndShowCast(d, host) { message ->
+                                                            errors += "Cast: $message"
+                                                            showNoControlFound(d, host, errors)
+                                                        }
                                                     }
                                                 }
                                             }
@@ -786,7 +787,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showCompanionHelp() {
         AlertDialog.Builder(this)
-            .setTitle("Android Companion • v0.9.0")
+            .setTitle("Android Companion • v0.9.2")
             .setMessage("Для управления вторым Android-телефоном установите на него companion-debug.apk из того же GitHub Actions artifact. На втором телефоне откройте Companion → Запустить Companion. Затем здесь запустите поиск, откройте карточку телефона и введите одноразовый 12-символьный код.\n\nГромкость и media работают после pairing. Home/Back/Recents требуют вручную включить Accessibility на управляемом телефоне. PIN/пароль блокировки не используется и не обходится.")
             .setPositiveButton("Понятно", null)
             .show()
@@ -798,14 +799,14 @@ class MainActivity : AppCompatActivity() {
             "\n\nНайдено сейчас: ${it.name}\n${it.protocol}\n${it.ipAddress ?: hostOf(it.address) ?: "IPv4 не подтверждён"}"
         }.orEmpty()
         AlertDialog.Builder(this)
-            .setTitle("iPhone / iPad • v0.9.0")
+            .setTitle("iPhone / iPad • v0.9.2")
             .setMessage(
                 "БЕЗ ПРИЛОЖЕНИЯ НА iOS:\n" +
                     "• UniversalRemote ищет Apple Bonjour/Mobile Device признаки и показывает iPhone/iPad как отдельный класс устройств.\n" +
                     "• Если iPad штатно enrolled в MDM, административные команды (например lock/app management) должны идти через ваш MDM-сервер; PIN экрана не является сетевым паролем.\n" +
                     "• Обычная iPadOS не предоставляет стороннему Android-приложению API для Home/Back/касания по экрану.\n\n" +
                     "С IOS COMPANION:\n" +
-                    "• исходники ios-companion входят в проект v0.9.0; pairing совместим с Companion v2, код живёт 5 минут, сессии можно отзывать;\n" +
+                    "• исходники ios-companion входят в проект v0.9.2; pairing совместим с Companion v2, код живёт 5 минут, сессии можно отзывать;\n" +
                     "• доступны Ping, Find/звуковой отклик и яркость экрана, когда Companion активен;\n" +
                     "• iOS может приостанавливать локальный listener в фоне, поэтому Companion не обещает скрытое/постоянное управление.\n\n" +
                     "Для установки iOS Companion на физический iPhone/iPad нужна подпись Apple Developer/вашего Team. GitHub CI делает compile-check, но не выдаёт фальшивый неподписанный IPA." + detected
@@ -978,6 +979,8 @@ class MainActivity : AppCompatActivity() {
             } }
         })
 
+        layout.addView(powerOffRow("⏻ ПИТАНИЕ TV") { runAndroidTv(d, host, AndroidTvController.KEY_POWER) })
+        layout.addView(text("Android TV использует системную кнопку POWER: на некоторых моделях это toggle, а не отдельная команда Off.", 11f, c("#AABBD4"), false))
         layout.addView(sectionTitle("НАВИГАЦИЯ"))
         addDpad(layout,
             { runAndroidTv(d, host, AndroidTvController.KEY_UP) },
@@ -1021,6 +1024,7 @@ class MainActivity : AppCompatActivity() {
             val scroll = ScrollView(this)
             val layout = remoteLayout(); scroll.addView(layout)
             layout.addView(text(info?.let { "${it.name} • ${it.model}" } ?: "Roku ECP", 13f, c("#72F1CE"), false))
+            layout.addView(powerOffRow("⏻ ВЫКЛЮЧИТЬ TV") { runRoku(d, host, "PowerOff") })
             layout.addView(sectionTitle("НАВИГАЦИЯ"))
             addDpad(layout,
                 { runRoku(d, host, "Up") }, { runRoku(d, host, "Left") }, { runRoku(d, host, "Select") },
@@ -1135,6 +1139,7 @@ class MainActivity : AppCompatActivity() {
             !samsung.isTlsTrusted(host) -> "Сначала приложение покажет SHA-256 TLS fingerprint и попросит закрепить сертификат; только затем TV сможет выдать token."
             else -> "TLS pin подтверждён. При первом нажатии подтвердите «Разрешить» на телевизоре."
         }, 13f, if (samsung.isPaired(host)) c("#72F1CE") else c("#AABBD4"), false))
+        layout.addView(powerOffRow("⏻ ВЫКЛЮЧИТЬ TV") { runSamsung(d, host, "KEY_POWEROFF") })
         layout.addView(sectionTitle("НАВИГАЦИЯ"))
         addDpad(layout,
             { runSamsung(d, host, "KEY_UP") }, { runSamsung(d, host, "KEY_LEFT") }, { runSamsung(d, host, "KEY_ENTER") },
@@ -1192,6 +1197,7 @@ class MainActivity : AppCompatActivity() {
                 } }
             }
         })
+        layout.addView(powerOffRow("⏻ ВЫКЛЮЧИТЬ TV") { runLg(d, host) { cb -> lgWebOs.powerOff(host, cb) } })
         layout.addView(sectionTitle("НАВИГАЦИЯ"))
         addDpad(layout,
             { runLg(d, host) { cb -> lgWebOs.button(host, "UP", cb) } },
@@ -1230,15 +1236,30 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun probeAndShowCast(d: NearbyDevice, host: String) {
-        ensureCastTls(host) {
+    private fun probeAndShowCast(d: NearbyDevice, host: String, onFailure: (String) -> Unit = { toast(it) }) {
+        if (cast.isTlsTrusted(host)) {
             toast("Проверяю Google Cast v2…")
             cast.probe(host) { result -> runOnUiThread {
-                if (!result.ok) return@runOnUiThread toast(result.message)
+                if (!result.ok) return@runOnUiThread onFailure(result.message)
                 markVerified(d.id)
                 showCastRemote(d, host)
             } }
+            return
         }
+        toast("Получаю TLS fingerprint Cast…")
+        cast.inspectTls(host) { result, fp -> runOnUiThread {
+            if (!result.ok || fp == null) return@runOnUiThread onFailure(result.message)
+            confirmTlsFingerprint("Google Cast", host, fp, {
+                val r = cast.approveTls(host, fp); r.ok to r.message
+            }) {
+                toast("Проверяю Google Cast v2…")
+                cast.probe(host) { probe -> runOnUiThread {
+                    if (!probe.ok) return@runOnUiThread onFailure(probe.message)
+                    markVerified(d.id)
+                    showCastRemote(d, host)
+                } }
+            }
+        } }
     }
 
     private fun showCastRemote(d: NearbyDevice, host: String) {
@@ -1478,7 +1499,7 @@ class MainActivity : AppCompatActivity() {
         val password = EditText(this).apply { hint = "Пароль PJLink (если требуется)"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
         layout.addView(password)
         layout.addView(controlRow("Включить проектор") { sendPjLink(d, password, host) { pw, cb -> pjlink.power(host, true, pw, cb) } })
-        layout.addView(controlRow("Выключить проектор") { sendPjLink(d, password, host) { pw, cb -> pjlink.power(host, false, pw, cb) } })
+        layout.addView(powerOffRow("⏻ ВЫКЛЮЧИТЬ ПРОЕКТОР") { sendPjLink(d, password, host) { pw, cb -> pjlink.power(host, false, pw, cb) } })
         layout.addView(controlRow("Громкость −") { sendPjLink(d, password, host) { pw, cb -> pjlink.volume(host, false, pw, cb) } })
         layout.addView(controlRow("Громкость +") { sendPjLink(d, password, host) { pw, cb -> pjlink.volume(host, true, pw, cb) } })
         layout.addView(controlRow("Mute") { sendPjLink(d, password, host) { pw, cb -> pjlink.mute(host, true, pw, cb) } })
@@ -1561,6 +1582,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun controlRow(label: String, action: () -> Unit) = Button(this).apply { text = label; isAllCaps = false; setOnClickListener { action() } }
+    private fun powerOffRow(label: String, action: () -> Unit) = Button(this).apply {
+        text = label; isAllCaps = false; textSize = 15f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
+        background = rounded(c("#5A1F2B"), 12, c("#B54A5D")); setOnClickListener { action() }
+    }
     private fun smallButton(label: String, action: () -> Unit) = Button(this).apply {
         text = label; textSize = 12f; setTextColor(Color.WHITE); isAllCaps = false
         typeface = Typeface.DEFAULT_BOLD; background = rounded(c("#172946"), 14, c("#294466")); setOnClickListener { action() }
