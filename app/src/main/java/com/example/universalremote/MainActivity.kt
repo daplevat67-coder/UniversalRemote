@@ -56,6 +56,7 @@ import com.example.universalremote.model.ScanConfig
 import com.example.universalremote.network.DeviceAnalyzer
 import com.example.universalremote.network.Ipv4Range
 import com.example.universalremote.network.ServiceHealthProbe
+import com.example.universalremote.network.WifiNetworkResolver
 import com.example.universalremote.ui.DeviceAdapter
 import java.net.Inet4Address
 import java.net.URI
@@ -121,6 +122,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         supportActionBar?.hide()
+        ensureDiscoverySourcesEnabled()
         androidTv = AndroidTvController(this)
         samsung = SamsungTvController(this)
         lgWebOs = LgWebOsController(this)
@@ -132,11 +134,11 @@ class MainActivity : AppCompatActivity() {
         ble = BleDiscovery(this, ::addDevice) { updateSourceStatus("BLE", it) }
         classic = BluetoothClassicDiscovery(this, ::addDevice) { updateSourceStatus("BT", it) }
         nsd = NsdDiscovery(this, ::addDevice) { updateSourceStatus("mDNS", it) }
-        ssdp = SsdpDiscovery(::addDevice)
+        ssdp = SsdpDiscovery(this, ::addDevice) { updateSourceStatus("SSDP", it) }
         lan = LanDiscovery(this, ::addDevice) { status -> updateSourceStatus("LAN", status) }
-        pjDiscovery = PjLinkDiscovery(this, ::addDevice)
+        pjDiscovery = PjLinkDiscovery(this, ::addDevice) { updateSourceStatus("PJLink", it) }
         wifiDiscovery = WifiDiscovery(this, ::addDevice) { updateSourceStatus("Wi‑Fi", it) }
-        yeelightDiscovery = YeelightDiscovery(::addDevice)
+        yeelightDiscovery = YeelightDiscovery(this, ::addDevice) { updateSourceStatus("Yeelight", it) }
         adapter = DeviceAdapter(::showDevice)
         setContentView(buildScreen())
     }
@@ -147,7 +149,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(26), dp(18), dp(14))
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c("#07111F"), c("#101B35"), c("#132842")))
         }
-        root.addView(text("UNIVERSAL REMOTE • v0.9.2", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+        root.addView(text("UNIVERSAL REMOTE • v0.9.4", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
         root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
         root.addView(text("Двухфазный LAN-поиск • Android + iOS/iPadOS Companion • Apple/Bonjour • API verification • TV • Cast • Hue • Yeelight • WLED", 13f, c("#AABBD4"), false))
 
@@ -211,25 +213,41 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestAndScan() {
-        val needed = when {
-            Build.VERSION.SDK_INT >= 31 -> arrayOf(
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.ACCESS_COARSE_LOCATION,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            )
-            else -> arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)
-        }
+        val needed = buildList {
+            if (Build.VERSION.SDK_INT >= 31) {
+                add(Manifest.permission.BLUETOOTH_SCAN)
+                add(Manifest.permission.BLUETOOTH_CONNECT)
+            }
+            if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            // Wi-Fi scan results can reveal location, so Android still requires precise location.
+            add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }.toTypedArray()
         if (needed.all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) startScan() else permissions.launch(needed)
+    }
+
+    private fun ensureDiscoverySourcesEnabled() {
+        val keys = listOf("ble", "classic", "wifi_radio", "mdns", "ssdp", "lan", "pjlink", "yeelight")
+        // A saved configuration with every source disabled makes the scan button legitimately return 0.
+        // Recover from that state automatically instead of leaving the UI apparently broken.
+        if (keys.all { prefs.contains(it) && !prefs.getBoolean(it, true) }) {
+            prefs.edit().apply { keys.forEach { putBoolean(it, true) } }.apply()
+        }
     }
 
     private fun startScan() {
         stopScan()
         devices.clear()
         sourceStatus.clear()
+        val route = WifiNetworkResolver.bindProcessToWifi(this)
+        sourceStatus["Маршрут"] = route.message
         adapter.submitList(emptyList())
         count.text = "…"
-        hint.text = "сканируем Bluetooth, Wi‑Fi эфир, LAN и службы"
+        hint.text = if (route.bound) {
+            "сканируем Bluetooth, Wi‑Fi эфир и LAN • ${route.message}"
+        } else {
+            "сканируем • ${route.message}; LAN-подключения могут блокироваться VPN"
+        }
         scanButton.text = "ПОИСК ИДЁТ…"
         acquireMulticast()
         if (prefs.getBoolean("ble", true)) runCatching { ble.start() }.onFailure { updateSourceStatus("BLE", it.javaClass.simpleName) }
@@ -647,7 +665,12 @@ class MainActivity : AppCompatActivity() {
      */
     private fun detectAndOpenRemote(d: NearbyDevice) {
         val host = d.ipAddress ?: hostOf(d.address) ?: return showPairingInfo(d)
-        toast("Проверяю реальные API на $host…")
+        val route = WifiNetworkResolver.bindProcessToWifi(this)
+        if (!route.bound) {
+            toast("LAN-маршрут: ${route.message}")
+        } else {
+            toast("Проверяю API на $host через Wi-Fi…")
+        }
         val controlPorts = listOf(80, 443, 3000, 3001, 4352, 6466, 6467, 8001, 8002, 8008, 8009, 8060, 55443, 62078, CompanionController.DEFAULT_PORT)
         val cfg = loadScanConfig().copy(
             ports = (controlPorts + d.openPorts.map { it.port }).distinct(),
@@ -787,7 +810,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showCompanionHelp() {
         AlertDialog.Builder(this)
-            .setTitle("Android Companion • v0.9.2")
+            .setTitle("Android Companion • v0.9.4")
             .setMessage("Для управления вторым Android-телефоном установите на него companion-debug.apk из того же GitHub Actions artifact. На втором телефоне откройте Companion → Запустить Companion. Затем здесь запустите поиск, откройте карточку телефона и введите одноразовый 12-символьный код.\n\nГромкость и media работают после pairing. Home/Back/Recents требуют вручную включить Accessibility на управляемом телефоне. PIN/пароль блокировки не используется и не обходится.")
             .setPositiveButton("Понятно", null)
             .show()
@@ -799,14 +822,14 @@ class MainActivity : AppCompatActivity() {
             "\n\nНайдено сейчас: ${it.name}\n${it.protocol}\n${it.ipAddress ?: hostOf(it.address) ?: "IPv4 не подтверждён"}"
         }.orEmpty()
         AlertDialog.Builder(this)
-            .setTitle("iPhone / iPad • v0.9.2")
+            .setTitle("iPhone / iPad • Companion v0.9.2")
             .setMessage(
                 "БЕЗ ПРИЛОЖЕНИЯ НА iOS:\n" +
                     "• UniversalRemote ищет Apple Bonjour/Mobile Device признаки и показывает iPhone/iPad как отдельный класс устройств.\n" +
                     "• Если iPad штатно enrolled в MDM, административные команды (например lock/app management) должны идти через ваш MDM-сервер; PIN экрана не является сетевым паролем.\n" +
                     "• Обычная iPadOS не предоставляет стороннему Android-приложению API для Home/Back/касания по экрану.\n\n" +
                     "С IOS COMPANION:\n" +
-                    "• исходники ios-companion входят в проект v0.9.2; pairing совместим с Companion v2, код живёт 5 минут, сессии можно отзывать;\n" +
+                    "• исходники ios-companion v0.9.2 входят в проект; pairing совместим с Companion v2, код живёт 5 минут, сессии можно отзывать;\n" +
                     "• доступны Ping, Find/звуковой отклик и яркость экрана, когда Companion активен;\n" +
                     "• iOS может приостанавливать локальный listener в фоне, поэтому Companion не обещает скрытое/постоянное управление.\n\n" +
                     "Для установки iOS Companion на физический iPhone/iPad нужна подпись Apple Developer/вашего Team. GitHub CI делает compile-check, но не выдаёт фальшивый неподписанный IPA." + detected
@@ -1608,6 +1631,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         stopScan(); upnp.close(); pjlink.close(); roku.close(); samsung.close(); wled.close(); cast.close(); yeelight.close(); lgWebOs.close(); hue.close(); androidTv.close(); analyzer.close(); wol.close(); healthProbe.close()
+        WifiNetworkResolver.unbindProcess(this)
         super.onDestroy()
     }
 }
