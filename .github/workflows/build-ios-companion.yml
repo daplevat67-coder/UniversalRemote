@@ -13,6 +13,11 @@ on:
     paths:
       - "ios-companion/**"
       - ".github/workflows/build-ios-companion.yml"
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - "ios-companion/**"
+      - ".github/workflows/build-ios-companion.yml"
 
 permissions:
   contents: read
