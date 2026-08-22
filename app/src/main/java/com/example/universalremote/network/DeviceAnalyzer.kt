@@ -1,10 +1,10 @@
 package com.example.universalremote.network
 
 import android.content.Context
+import android.net.Network
 import com.example.universalremote.model.NearbyDevice
 import com.example.universalremote.model.PortService
 import com.example.universalremote.model.ScanConfig
-import java.net.InetAddress
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
@@ -12,6 +12,7 @@ import java.util.concurrent.TimeUnit
 class DeviceAnalyzer(context: Context) {
     private val appContext = context.applicationContext
     private val executor = Executors.newFixedThreadPool(3)
+    private val probeExecutor = Executors.newFixedThreadPool(24)
 
     fun analyze(device: NearbyDevice, config: ScanConfig, callback: (NearbyDevice) -> Unit) {
         val host = device.ipAddress ?: hostFrom(device.address) ?: return callback(device.copy(analysisNote = "IPv4-адрес не определён"))
@@ -19,15 +20,15 @@ class DeviceAnalyzer(context: Context) {
             return callback(device.copy(analysisNote = "Сетевой анализ заблокирован: адрес вне текущей Wi-Fi подсети"))
         }
         executor.execute {
-            val ports = if (config.scanPorts) scanPorts(host, config) else device.openPorts.sortedBy { it.port }
+            val network = WifiNetworkResolver.current(appContext)?.network
+            val ports = if (config.scanPorts) scanPorts(network, host, config) else device.openPorts.sortedBy { it.port }
             val mac = device.macAddress ?: NeighborResolver.macFor(host)
             val vendor = device.hardwareVendor ?: MacVendorResolver.resolve(mac)
-            val hostname = reverseName(host)
             val os = inferOs(ports, device)
             val note = when {
                 !config.scanPorts -> "TCP-сканирование выключено в настройках; использованы только уже известные службы"
                 ports.isEmpty() -> "TCP-порты из выбранного набора не ответили"
-                else -> "Проверено ${config.ports.distinct().take(64).size} TCP-портов"
+                else -> "Проверено ${config.ports.distinct().take(64).size} TCP-портов через физическую Wi-Fi/LAN сеть"
             }
             callback(
                 device.copy(
@@ -35,7 +36,8 @@ class DeviceAnalyzer(context: Context) {
                     macAddress = mac,
                     hardwareVendor = vendor,
                     openPorts = ports,
-                    hostname = hostname,
+                    // Avoid reverse-DNS via the default/VPN resolver; retain a name learned from discovery.
+                    hostname = device.hostname,
                     osHint = os,
                     analysisNote = note,
                     securityFindings = securityFindings(ports)
@@ -44,18 +46,31 @@ class DeviceAnalyzer(context: Context) {
         }
     }
 
-    private fun scanPorts(host: String, config: ScanConfig): List<PortService> {
-        val portPool = Executors.newFixedThreadPool(config.parallelism.coerceIn(4, 32))
+    private fun scanPorts(network: Network?, host: String, config: ScanConfig): List<PortService> {
         val futures = mutableListOf<Future<PortService?>>()
         config.ports.distinct().take(64).forEach { port ->
-            futures += portPool.submit<PortService?> { TcpProbe.inspect(host, port, config.connectTimeoutMs, config.bannerTimeoutMs) }
+            futures += probeExecutor.submit<PortService?> {
+                TcpProbe.inspect(network, host, port, config.connectTimeoutMs, config.bannerTimeoutMs)
+            }
         }
-        portPool.shutdown()
-        portPool.awaitTermination((config.connectTimeoutMs + config.bannerTimeoutMs + 2000L), TimeUnit.MILLISECONDS)
-        return futures.mapNotNull { runCatching { it.get(50, TimeUnit.MILLISECONDS) }.getOrNull() }.sortedBy { it.port }
+        val deadlineMs = (config.connectTimeoutMs + config.bannerTimeoutMs + 2500L).coerceAtMost(7000L)
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(deadlineMs)
+        return futures.mapNotNull { future ->
+            val remaining = deadline - System.nanoTime()
+            if (remaining <= 0L) {
+                future.cancel(true)
+                null
+            } else {
+                runCatching { future.get(remaining, TimeUnit.NANOSECONDS) }
+                    .getOrElse { future.cancel(true); null }
+            }
+        }.sortedBy { it.port }
     }
 
-    fun close() = executor.shutdownNow()
+    fun close() {
+        executor.shutdownNow()
+        probeExecutor.shutdownNow()
+    }
 
     companion object {
         fun inferOs(ports: List<PortService>, device: NearbyDevice? = null): String? {
@@ -96,10 +111,5 @@ class DeviceAnalyzer(context: Context) {
             address.startsWith("http://") || address.startsWith("https://") -> runCatching { java.net.URI(address).host }.getOrNull()
             else -> address.substringBefore(':').takeIf { it.matches(Regex("\\d{1,3}(?:\\.\\d{1,3}){3}")) }
         }
-
-        private fun reverseName(host: String): String? = runCatching {
-            val value = InetAddress.getByName(host).canonicalHostName
-            value.takeIf { it != host && !it.matches(Regex("\\d{1,3}(?:\\.\\d{1,3}){3}")) }
-        }.getOrNull()
     }
 }
