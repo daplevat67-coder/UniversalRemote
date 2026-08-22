@@ -11,7 +11,12 @@ import subprocess
 from dataclasses import dataclass, asdict
 import json
 
-DEFAULT_PORTS = [21, 22, 23, 53, 80, 139, 443, 445, 554, 631, 1883, 3389, 4352, 5000, 8008, 8009, 8080, 8443, 8883, 9100]
+DEFAULT_PORTS = [
+    21, 22, 23, 53, 80, 139, 443, 445, 554, 631, 1883,
+    3000, 3001, 3389, 4352, 45123, 5000, 5001, 6466, 6467,
+    8001, 8002, 8008, 8009, 8060, 8080, 8443, 8883, 9100,
+    55443, 62078,
+]
 
 @dataclass
 class Service:
@@ -21,9 +26,14 @@ class Service:
 
 SERVICE_NAMES = {
     21: "FTP", 22: "SSH", 23: "Telnet", 53: "DNS", 80: "HTTP", 139: "NetBIOS", 443: "HTTPS", 445: "SMB", 554: "RTSP",
-    631: "IPP", 1883: "MQTT", 3389: "RDP", 4352: "PJLink", 5000: "HTTP/UPnP",
-    8008: "Google Cast HTTP", 8009: "Google Cast", 8080: "HTTP-alt", 8443: "HTTPS-alt", 9100: "JetDirect",
+    631: "IPP", 1883: "MQTT", 3000: "LG webOS SSAP", 3001: "LG webOS SSAP TLS", 3389: "RDP", 4352: "PJLink",
+    45123: "UniversalRemote Companion", 5000: "HTTP/UPnP", 5001: "HTTPS/UPnP", 6466: "Android TV Remote", 6467: "Android TV Pairing",
+    8001: "Samsung Tizen Remote", 8002: "Samsung Tizen Remote TLS", 8008: "Google Cast HTTP", 8009: "Google Cast", 8060: "Roku ECP",
+    8080: "HTTP-alt", 8443: "HTTPS-alt", 8883: "MQTT TLS", 9100: "JetDirect", 55443: "Yeelight LAN Control",
+    62078: "Apple Mobile Device / Wi-Fi Sync",
 }
+
+QUICK_PORTS = [45123, 6466, 6467, 3000, 3001, 8001, 8002, 8009, 8060, 4352, 55443, 80, 443, 22, 445, 631, 8008, 9100]
 
 def connect(host: str, port: int, timeout: float) -> socket.socket | None:
     try:
@@ -38,7 +48,7 @@ def banner(host: str, port: int, timeout: float) -> Service | None:
     if not s:
         return None
     try:
-        if port in (80, 5000, 8008, 8080):
+        if port in (80, 5000, 8008, 8060, 8080):
             s.sendall(f"HEAD / HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode("ascii"))
         data = s.recv(768)
         text = " ".join(data.decode("latin1", "replace").split())[:240] or None
@@ -50,16 +60,21 @@ def banner(host: str, port: int, timeout: float) -> Service | None:
 
 def arp_mac(host: str) -> str | None:
     try:
-        out = subprocess.check_output(["ip", "neigh", "show", host], text=True, stderr=subprocess.DEVNULL)
+        out = subprocess.check_output(
+            ["ip", "neigh", "show", host],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=0.8,
+        )[:16_384]
         parts = out.split()
         if "lladdr" in parts:
             return parts[parts.index("lladdr") + 1]
-    except Exception:
+    except (subprocess.SubprocessError, OSError):
         pass
     return None
 
 def scan_host(host: str, ports: list[int], timeout: float) -> dict | None:
-    quick = [80, 443, 22, 445, 631, 3389, 4352, 8008, 9100]
+    quick = list(dict.fromkeys([p for p in QUICK_PORTS if p in ports] + ports[:8]))
     if not any(connect_and_close(host, p, timeout) for p in quick):
         return None
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(ports) or 1)) as pool:
