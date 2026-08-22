@@ -1,8 +1,6 @@
 package com.example.universalremote.network
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.URI
@@ -14,27 +12,22 @@ object LocalEndpointPolicy {
         return Ipv4Range.isPrivate(Ipv4Range.ipv4ToInt(address))
     }
 
-    /** True only when [host] is an IPv4 peer inside the active Wi-Fi link prefix. */
+    /** True only when [host] is an IPv4 peer inside the physical Wi-Fi/LAN prefix selected by WifiNetworkResolver. */
     fun isInCurrentWifiSubnet(context: Context, host: String): Boolean {
         val target = resolveIpv4(host) ?: return false
         if (!Ipv4Range.isPrivate(Ipv4Range.ipv4ToInt(target))) return false
-        val cm = context.applicationContext.getSystemService(ConnectivityManager::class.java) ?: return false
-        val wifiNetworks = cm.allNetworks.filter { network ->
-            cm.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-        }
-        return wifiNetworks.any networkLoop@ { network ->
-            val props = cm.getLinkProperties(network) ?: return@networkLoop false
-            props.linkAddresses.any linkLoop@ { link ->
-                val local = link.address as? Inet4Address ?: return@linkLoop false
-                samePrefix(local.address, target.address, link.prefixLength)
-            }
-        }
+        val lan = WifiNetworkResolver.lanInfo(context) ?: return false
+        return samePrefix(lan.ipv4.address, target.address, lan.prefixLength)
     }
 
     fun requireCurrentWifiSubnet(context: Context, host: String) {
         require(isInCurrentWifiSubnet(context, host)) { "Адрес вне текущей Wi-Fi подсети" }
     }
 
+    /**
+     * Validates an advertised URL against the discovered source IPv4. The resolution result is obtained once
+     * and all answers must remain private; callers should prefer literal source IPv4 for the actual socket.
+     */
     fun samePrivateHost(expectedHost: String, url: String, allowedSchemes: Set<String>): Boolean = runCatching {
         val expected = resolveIpv4(expectedHost) ?: return@runCatching false
         if (!Ipv4Range.isPrivate(Ipv4Range.ipv4ToInt(expected))) return@runCatching false
@@ -42,18 +35,21 @@ object LocalEndpointPolicy {
         val scheme = uri.scheme?.lowercase() ?: return@runCatching false
         if (scheme !in allowedSchemes || uri.userInfo != null) return@runCatching false
         val targetHost = uri.host ?: return@runCatching false
-        val targets = InetAddress.getAllByName(targetHost).filterIsInstance<Inet4Address>()
-        targets.isNotEmpty() && targets.all { Ipv4Range.isPrivate(Ipv4Range.ipv4ToInt(it)) } && targets.any { it == expected }
+        val targets = resolveAllIpv4(targetHost)
+        targets.isNotEmpty() &&
+            targets.all { Ipv4Range.isPrivate(Ipv4Range.ipv4ToInt(it)) } &&
+            targets.any { it == expected }
     }.getOrDefault(false)
 
     fun requireSamePrivateHost(expectedHost: String, url: String, allowedSchemes: Set<String>) {
         require(samePrivateHost(expectedHost, url, allowedSchemes)) { "LAN endpoint указывает на другой/публичный хост" }
     }
 
-    private fun resolveIpv4(host: String): Inet4Address? = runCatching {
-        InetAddress.getAllByName(host).filterIsInstance<Inet4Address>().singleOrNull()
-            ?: InetAddress.getAllByName(host).filterIsInstance<Inet4Address>().firstOrNull()
-    }.getOrNull()
+    private fun resolveAllIpv4(host: String): List<Inet4Address> = runCatching {
+        InetAddress.getAllByName(host).filterIsInstance<Inet4Address>()
+    }.getOrDefault(emptyList())
+
+    private fun resolveIpv4(host: String): Inet4Address? = resolveAllIpv4(host).firstOrNull()
 
     private fun samePrefix(a: ByteArray, b: ByteArray, prefixLength: Int): Boolean {
         if (a.size != 4 || b.size != 4 || prefixLength !in 0..32) return false
