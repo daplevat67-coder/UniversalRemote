@@ -1,5 +1,6 @@
 package com.example.universalremote.network
 
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -35,9 +36,11 @@ object NeighborResolver {
     }.getOrDefault(emptyMap())
 
     private fun readIpNeighAll(): Map<String, String> = runCatching {
-        val process = ProcessBuilder("/system/bin/ip", "neigh", "show").redirectErrorStream(true).start()
-        val text = process.inputStream.bufferedReader().use { it.readText().take(256 * 1024) }
-        if (!process.waitFor(800, TimeUnit.MILLISECONDS)) process.destroyForcibly()
+        val text = readProcessBounded(
+            listOf("/system/bin/ip", "neigh", "show"),
+            maxBytes = 256 * 1024,
+            timeoutMs = 800
+        ) ?: return@runCatching emptyMap()
         text.lineSequence().mapNotNull { line ->
             val ip = ipv4Regex.find(line)?.value ?: return@mapNotNull null
             val mac = macRegex.find(line)?.value ?: return@mapNotNull null
@@ -46,9 +49,44 @@ object NeighborResolver {
     }.getOrDefault(emptyMap())
 
     private fun readIpNeigh(ip: String): String? = runCatching {
-        val process = ProcessBuilder("/system/bin/ip", "neigh", "show", ip).redirectErrorStream(true).start()
-        val text = process.inputStream.bufferedReader().use { it.readText().take(16 * 1024) }
-        if (!process.waitFor(500, TimeUnit.MILLISECONDS)) process.destroyForcibly()
+        val text = readProcessBounded(
+            listOf("/system/bin/ip", "neigh", "show", ip),
+            maxBytes = 16 * 1024,
+            timeoutMs = 500
+        ) ?: return@runCatching null
         macRegex.find(text)?.value?.lowercase()
     }.getOrNull()
+
+    /** Reads stdout concurrently with a hard byte cap so process timeout cannot be defeated by a blocked readText(). */
+    private fun readProcessBounded(command: List<String>, maxBytes: Int, timeoutMs: Long): String? {
+        val process = ProcessBuilder(command).redirectErrorStream(true).start()
+        val output = ByteArrayOutputStream(minOf(maxBytes, 16 * 1024))
+        val reader = Thread {
+            runCatching {
+                process.inputStream.use { input ->
+                    val buffer = ByteArray(4096)
+                    var remaining = maxBytes
+                    while (remaining > 0) {
+                        val n = input.read(buffer, 0, minOf(buffer.size, remaining))
+                        if (n <= 0) break
+                        output.write(buffer, 0, n)
+                        remaining -= n
+                    }
+                }
+            }
+        }.apply {
+            isDaemon = true
+            name = "uremote-ip-neigh-reader"
+            start()
+        }
+
+        val finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+        if (!finished) process.destroyForcibly()
+        reader.join(150)
+        if (reader.isAlive) {
+            runCatching { process.inputStream.close() }
+            reader.interrupt()
+        }
+        return output.toString(Charsets.UTF_8.name())
+    }
 }
