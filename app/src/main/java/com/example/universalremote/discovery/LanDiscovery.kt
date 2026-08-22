@@ -46,7 +46,8 @@ class LanDiscovery(
         val lan = WifiNetworkResolver.lanInfo(app) ?: return onStatus("LAN: локальная IPv4 сеть не найдена")
         val network = lan.network
         val local = lan.ipv4
-        val fullRange = resolveRange(local, lan.prefixLength, config.range) ?: return
+        val physicalRange = physicalRange(local, lan.prefixLength) ?: return onStatus("LAN: некорректная Wi-Fi маска")
+        val fullRange = resolveRange(physicalRange, config.range) ?: return
         if (!Ipv4Range.isPrivate(fullRange)) return onStatus("разрешены только local/private IPv4")
         if (fullRange.size > MAX_CONFIGURED_RANGE) return onStatus("диапазон слишком большой; максимум $MAX_CONFIGURED_RANGE IPv4")
 
@@ -54,17 +55,18 @@ class LanDiscovery(
         val activeRange = boundedActiveRange(fullRange, own, MAX_ACTIVE_ADDRESSES)
         val infrastructure = (lan.gateways + lan.dnsServers)
             .distinct()
-            .filter { Ipv4Range.ipv4ToInt(it) != own }
+            .filter { address ->
+                val ip = Ipv4Range.ipv4ToInt(address)
+                ip != own && inRange(ip, physicalRange)
+            }
 
         executor = Executors.newFixedThreadPool(config.parallelism.coerceIn(12, 48))
         val scopeNote = if (activeRange.first == fullRange.first && activeRange.last == fullRange.last) {
             "${fullRange.label}: ${fullRange.size} адресов"
         } else {
-            "${fullRange.label}: ${fullRange.size} адресов; активное окно ${activeRange.size}"
+            "${fullRange.label}: ${fullRange.size} адресов; активно проверяется ${activeRange.size} из ${fullRange.size}"
         }
 
-        // Emit infrastructure immediately. In v0.9.2 this happened only after the sweep and made the
-        // UI look completely dead when Android/VPN prevented neighbor-table access.
         infrastructure.forEach { address ->
             val host = address.hostAddress ?: return@forEach
             emitHost(host, emptyList(), null, "Сетевая инфраструктура")
@@ -148,7 +150,6 @@ class LanDiscovery(
         val seedPorts = firstOpen?.let { listOf(PortService(it, TcpProbe.serviceName(it))) }.orEmpty()
         emitHost(host, seedPorts, null, if (firstOpen != null) "LAN TCP service" else "LAN TCP presence")
 
-        // Only hosts that already proved they are alive get the more expensive protocol check.
         inspectKnownHost(network, host, null, token, config.copy(connectTimeoutMs = quickTimeout.coerceAtLeast(100)))
     }
 
@@ -221,26 +222,47 @@ class LanDiscovery(
         }
     }
 
-    private fun resolveRange(local: Inet4Address, prefixLength: Int, configured: String): Ipv4Range.Parsed? {
-        val value = configured.trim()
-        if (value.isNotBlank() && !value.equals("auto", true)) {
-            val parsed = Ipv4Range.parse(value)
-            if (parsed == null) onStatus("диапазон: используйте CIDR или IP-IP")
-            return parsed
-        }
+    private fun physicalRange(local: Inet4Address, prefixLength: Int): Ipv4Range.Parsed? {
+        if (prefixLength !in 0..32) return null
         val own = Ipv4Range.ipv4ToInt(local)
-        val prefix = prefixLength.coerceIn(8, 30)
-        val mask = (-1 shl (32 - prefix))
+        if (prefixLength == 32) return Ipv4Range.Parsed(own, own, "${local.hostAddress}/32")
+        val mask = if (prefixLength == 0) 0 else (-1 shl (32 - prefixLength))
         val network = own and mask
         val broadcast = network or mask.inv()
-        return Ipv4Range.Parsed(network + 1, broadcast - 1, "${Ipv4Range.intToIpv4(network).hostAddress}/$prefix")
+        return when (prefixLength) {
+            31 -> Ipv4Range.Parsed(network, broadcast, "${Ipv4Range.intToIpv4(network).hostAddress}/31")
+            else -> Ipv4Range.Parsed(network + 1, broadcast - 1, "${Ipv4Range.intToIpv4(network).hostAddress}/$prefixLength")
+        }
     }
+
+    /** User ranges may only narrow the actual Wi-Fi prefix; they can never expand beyond it. */
+    private fun resolveRange(physical: Ipv4Range.Parsed, configured: String): Ipv4Range.Parsed? {
+        val value = configured.trim()
+        if (value.isBlank() || value.equals("auto", true)) return physical
+        val requested = Ipv4Range.parse(value) ?: run {
+            onStatus("диапазон: используйте CIDR или IP-IP; используется Wi-Fi ${physical.label}")
+            return physical
+        }
+        val first = maxUnsigned(requested.first, physical.first)
+        val last = minUnsigned(requested.last, physical.last)
+        if (first.toUInt() > last.toUInt()) {
+            onStatus("диапазон $value вне Wi-Fi ${physical.label}; используется физическая подсеть")
+            return physical
+        }
+        if (first != requested.first || last != requested.last) {
+            onStatus("диапазон $value ограничен текущей Wi-Fi подсетью ${physical.label}")
+        }
+        return Ipv4Range.Parsed(first, last, "$value ∩ ${physical.label}")
+    }
+
+    private fun maxUnsigned(a: Int, b: Int): Int = if (a.toUInt() >= b.toUInt()) a else b
+    private fun minUnsigned(a: Int, b: Int): Int = if (a.toUInt() <= b.toUInt()) a else b
 
     private fun boundedActiveRange(full: Ipv4Range.Parsed, own: Int, max: Int): Ipv4Range.Parsed {
         if (full.size <= max) return full
         val fullFirst = full.first.toUInt().toLong()
         val fullLast = full.last.toUInt().toLong()
-        val ownU = own.toUInt().toLong()
+        val ownU = own.toUInt().toLong().coerceIn(fullFirst, fullLast)
         var first = (ownU - max / 2).coerceAtLeast(fullFirst)
         var last = (first + max - 1).coerceAtMost(fullLast)
         first = (last - max + 1).coerceAtLeast(fullFirst)
@@ -257,7 +279,6 @@ class LanDiscovery(
             45123, 62078, 6466, 6467, 8060, 8002, 8001, 3001, 3000, 8009, 8008,
             55443, 4352, 80, 443, 22, 445, 554, 631, 3389, 9100, 1883
         )
-        // Representative ports: closed ports often return ECONNREFUSED immediately and prove liveness.
         private val PRESENCE_PORTS = listOf(45123, 8009, 8060, 8002, 6466, 80, 443, 22)
         private val MOBILE_VENDOR_HINTS = setOf("Apple", "Google", "Xiaomi", "Huawei", "Samsung")
     }

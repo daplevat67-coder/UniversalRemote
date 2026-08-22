@@ -26,6 +26,8 @@ class NsdDiscovery(
     private val listeners = mutableListOf<NsdManager.DiscoveryListener>()
     private val resolveQueue = ArrayDeque<NsdServiceInfo>()
     private var resolving = false
+    private var activeResolveToken = 0L
+    private var nextResolveToken = 0L
     private var stopped = true
     private var generation = 0
 
@@ -77,7 +79,6 @@ class NsdDiscovery(
         }.onFailure { onDiagnostic("mDNS $type: ${it.javaClass.simpleName}") }
     }
 
-
     @RequiresApi(33)
     private fun discoverOnNetwork(type: String, network: Network, listener: NsdManager.DiscoveryListener) {
         manager.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, network, { command -> handler.post(command) }, listener)
@@ -96,35 +97,52 @@ class NsdDiscovery(
         if (stopped || resolving || resolveQueue.isEmpty()) return
         val service = resolveQueue.removeFirst()
         resolving = true
+        val token = ++nextResolveToken
+        activeResolveToken = token
+        handler.postDelayed({
+            synchronized(this) {
+                if (!stopped && resolving && activeResolveToken == token) {
+                    onDiagnostic("mDNS resolve ${service.serviceName}: timeout")
+                    finishResolve(token)
+                }
+            }
+        }, RESOLVE_TIMEOUT_MS)
+
         @Suppress("DEPRECATION")
         runCatching {
             manager.resolveService(service, object : NsdManager.ResolveListener {
                 override fun onResolveFailed(s: NsdServiceInfo, e: Int) {
                     onDiagnostic("mDNS resolve ${s.serviceName}: $e")
-                    finishResolve()
+                    finishResolve(token)
                 }
+
                 @Suppress("DEPRECATION")
                 override fun onServiceResolved(s: NsdServiceInfo) {
                     runCatching { handleResolved(s) }
                         .onFailure { onDiagnostic("mDNS ${s.serviceName}: ${it.javaClass.simpleName}") }
-                    finishResolve()
+                    finishResolve(token)
                 }
             })
         }.onFailure {
             onDiagnostic("mDNS resolve start: ${it.javaClass.simpleName}")
-            finishResolve()
+            finishResolve(token)
         }
     }
 
     @Synchronized
-    private fun finishResolve() {
+    private fun finishResolve(token: Long) {
+        if (token != activeResolveToken) return
+        activeResolveToken = 0L
         resolving = false
         resolveNext()
     }
 
     private fun handleResolved(s: NsdServiceInfo) {
         val host = s.host?.hostAddress ?: return
-        if (!LocalEndpointPolicy.isPrivateIpv4(host)) return
+        if (!LocalEndpointPolicy.isInCurrentWifiSubnet(app, host)) {
+            onDiagnostic("mDNS ${s.serviceName}: адрес вне текущей Wi-Fi подсети")
+            return
+        }
         val info = classify(s.serviceType, s.serviceName)
         val attrs = runCatching { s.attributes }.getOrNull().orEmpty()
         val advertisedLocation = attrs["location"]?.toString(Charsets.UTF_8)?.takeIf { it.startsWith("http", true) }
@@ -193,6 +211,7 @@ class NsdDiscovery(
         synchronized(this) {
             resolveQueue.clear()
             resolving = false
+            activeResolveToken = 0L
         }
     }
 
@@ -231,6 +250,7 @@ class NsdDiscovery(
     private fun lightCaps() = setOf(ControlCapability.LIGHT_POWER, ControlCapability.BRIGHTNESS, ControlCapability.COLOR)
 
     companion object {
-        private const val START_STAGGER_MS = 120L
+        private const val START_STAGGER_MS = 180L
+        private const val RESOLVE_TIMEOUT_MS = 4_000L
     }
 }

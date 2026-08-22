@@ -6,6 +6,13 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
+    paths:
+      - "app/**"
+      - "companion/**"
+      - ".github/workflows/build-apk.yml"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - "gradle.properties"
 
 permissions:
   contents: read
@@ -14,25 +21,29 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      VERSION: 0.9.5
+      VERSION: 0.9.6
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
-      - uses: actions/setup-java@v5
+      - name: Set up Java 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
           distribution: temurin
           java-version: "17"
 
-      - uses: gradle/actions/setup-gradle@v6
+      - name: Set up Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
         with:
           gradle-version: "8.10.2"
+          cache-cleanup: always
 
-      - name: Lint and unit tests
-        run: gradle :app:lintDebug :companion:lintDebug :app:testDebugUnitTest
+      - name: Quality gates
+        run: gradle :app:lintDebug :companion:lintDebug :app:testDebugUnitTest :companion:testDebugUnitTest
 
       - name: Build installable debug APKs
         run: gradle :app:assembleDebug :companion:assembleDebug
@@ -48,28 +59,40 @@ jobs:
             "dist/android/UniversalRemote-Companion-v${VERSION}.apk"
           sha256sum dist/android/*.apk > dist/android/SHA256SUMS.txt
 
-      - name: Upload installable APKs
-        uses: actions/upload-artifact@v6
+      - name: Upload verified debug APKs
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: UniversalRemote-v0.9.5-APKs
+          name: UniversalRemote-v0.9.6-APKs
           if-no-files-found: error
           retention-days: 30
           path: dist/android/
 
+      - name: Check release signing configuration
+        id: android_signing
+        shell: bash
+        run: |
+          if [[ -n "$ANDROID_KEYSTORE_BASE64" && -n "$ANDROID_KEY_ALIAS" && -n "$ANDROID_KEYSTORE_PASSWORD" && -n "$ANDROID_KEY_PASSWORD" ]]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Android release signing secrets are incomplete; verified debug APKs remain available."
+          fi
+
       - name: Prepare release signing key
-        if: env.ANDROID_KEYSTORE_BASE64 != ''
+        if: steps.android_signing.outputs.ready == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/universalremote-release.jks"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/universalremote-release.jks"
+          chmod 600 "$RUNNER_TEMP/universalremote-release.jks"
           echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/universalremote-release.jks" >> "$GITHUB_ENV"
 
       - name: Build signed release APKs
-        if: env.ANDROID_KEYSTORE_BASE64 != ''
+        if: steps.android_signing.outputs.ready == 'true'
         run: gradle :app:assembleRelease :companion:assembleRelease
 
       - name: Prepare named signed release APKs
-        if: env.ANDROID_KEYSTORE_BASE64 != ''
+        if: steps.android_signing.outputs.ready == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -81,10 +104,16 @@ jobs:
           sha256sum dist/android-release/*.apk > dist/android-release/SHA256SUMS.txt
 
       - name: Upload signed release APKs
-        if: env.ANDROID_KEYSTORE_BASE64 != ''
-        uses: actions/upload-artifact@v6
+        if: steps.android_signing.outputs.ready == 'true'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: UniversalRemote-v0.9.5-signed-release-APKs
+          name: UniversalRemote-v0.9.6-signed-release-APKs
           if-no-files-found: error
           retention-days: 30
           path: dist/android-release/
+
+      - name: Cleanup Android signing material
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/universalremote-release.jks"
