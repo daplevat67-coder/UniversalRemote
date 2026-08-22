@@ -139,7 +139,7 @@ class NsdDiscovery(
             appleCompanion -> "Apple Bonjour / Mobile Device service"
             roku -> "Roku ECP"
             wled -> "WLED JSON API"
-            cast -> "Google Cast v2"
+            cast -> "Google Cast advertisement (кандидат)"
             hue -> "Philips Hue Bridge API v2"
             webos -> "LG webOS SSAP"
             sonos && location != null -> "UPnP MediaRenderer / Sonos mDNS"
@@ -156,7 +156,7 @@ class NsdDiscovery(
                 },
                 protocol = protocol,
                 address = "$host:${s.port}",
-                controllable = companion || androidTv || roku || wled || cast || hue || webos || (sonos && location != null),
+                controllable = companion || androidTv || roku || wled || hue || webos || (sonos && location != null),
                 brand = when { iosCompanion -> "Apple / UniversalRemote iOS Companion"; appleCompanion || appleMobileByName -> "Apple"; else -> info.second },
                 capabilities = when { iosCompanion -> setOf(ControlCapability.FIND_DEVICE); else -> info.third },
                 descriptionUrl = location,
@@ -187,7 +187,7 @@ class NsdDiscovery(
             "companion-link" in t || "apple-mobdev2" in t || "device-info" in t || "iphone" in n || "ipad" in n -> Triple("iPhone / iPad / Apple устройство", "Apple", emptySet())
             "androidtv" in t -> Triple("Телевизор / Android TV", "Android TV", tvCaps())
             "webos" in t || "lge-app-remote" in t -> Triple("Телевизор / LG webOS", "LG", tvCaps())
-            "googlecast" in t -> Triple("ТВ / медиаплеер", "Google Cast", setOf(ControlCapability.VOLUME, ControlCapability.MUTE, ControlCapability.MEDIA))
+            "googlecast" in t -> Triple("ТВ / медиаплеер", "Cast-compatible", setOf(ControlCapability.VOLUME, ControlCapability.MUTE, ControlCapability.MEDIA))
             "airplay" in t || "raop" in t -> Triple("ТВ / медиаплеер", "Apple AirPlay", setOf(ControlCapability.VOLUME, ControlCapability.MEDIA))
             "spotify" in t -> Triple("Колонка / медиаплеер", "Spotify Connect", setOf(ControlCapability.VOLUME, ControlCapability.MEDIA))
             "sonos" in t -> Triple("Колонка / медиаплеер", "Sonos", setOf(ControlCapability.VOLUME, ControlCapability.MUTE, ControlCapability.MEDIA))

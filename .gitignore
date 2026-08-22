@@ -4,3 +4,8 @@ local.properties
 **/build/
 *.iml
 .DS_Store
+
+__pycache__/
+*.pyc
+*.apk
+apk-*/
