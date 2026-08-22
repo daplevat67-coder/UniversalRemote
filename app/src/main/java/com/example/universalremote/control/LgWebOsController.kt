@@ -2,6 +2,7 @@ package com.example.universalremote.control
 
 import android.content.Context
 import com.example.universalremote.network.LocalEndpointPolicy
+import com.example.universalremote.network.WifiNetworkResolver
 import com.example.universalremote.security.SecureStore
 import com.example.universalremote.security.TofuTls
 import okhttp3.OkHttpClient
@@ -20,7 +21,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 class LgWebOsController(context: Context) {
     data class Result(val ok: Boolean, val message: String)
 
-    private val secrets = SecureStore(context, "lg_webos_keys")
+    private val app = context.applicationContext
+    private val secrets = SecureStore(app, "lg_webos_keys")
     private val tofu = TofuTls(secrets, "lg")
     private val clients = ConcurrentHashMap<String, OkHttpClient>()
     private val executor = Executors.newFixedThreadPool(2)
@@ -29,12 +31,14 @@ class LgWebOsController(context: Context) {
     fun isTlsTrusted(host: String): Boolean = tofu.isPinned(host)
     fun inspectTls(host: String, callback: (Result, String?) -> Unit) = executor.execute {
         val pair = runCatching {
-            require(LocalEndpointPolicy.isPrivateIpv4(host)) { "LG: адрес вне private LAN" }
-            Result(true, "LG TLS fingerprint получен") to tofu.inspectFingerprint(host, 3001)
+            LocalEndpointPolicy.requireCurrentWifiSubnet(app, host)
+            val network = WifiNetworkResolver.current(app)?.network
+            Result(true, "LG TLS fingerprint получен через текущую Wi-Fi LAN") to tofu.inspectFingerprint(network, host, 3001)
         }.getOrElse { Result(false, "LG TLS: ${it.message ?: it.javaClass.simpleName}") to null }
         callback(pair.first, pair.second)
     }
     fun approveTls(host: String, fingerprint: String): Result = runCatching {
+        LocalEndpointPolicy.requireCurrentWifiSubnet(app, host)
         tofu.approve(host, fingerprint); Result(true, "LG TLS-сертификат закреплён")
     }.getOrElse { Result(false, "LG TLS: ${it.message}") }
     fun forget(host: String) {
@@ -57,15 +61,19 @@ class LgWebOsController(context: Context) {
     fun button(host: String, name: String, callback: (Result) -> Unit) {
         pointerSocket(host) { result, socketPath ->
             if (!result.ok || socketPath == null) return@pointerSocket callback(result)
-            if (!LocalEndpointPolicy.samePrivateHost(host, socketPath, setOf("ws", "wss"))) {
-                return@pointerSocket callback(Result(false, "LG отклонил небезопасный pointer socket: другой/публичный хост"))
+            if (!LocalEndpointPolicy.samePrivateHost(host, socketPath, setOf("ws", "wss")) || !LocalEndpointPolicy.isInCurrentWifiSubnet(app, host)) {
+                return@pointerSocket callback(Result(false, "LG отклонил pointer socket вне текущей Wi-Fi LAN"))
             }
+            val plaintext = socketPath.startsWith("ws://", ignoreCase = true)
             val done = AtomicBoolean(false)
             client(host).newWebSocket(Request.Builder().url(socketPath).build(), object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     webSocket.send("type:button\nname:$name\n\n")
                     webSocket.close(1000, "done")
-                    if (done.compareAndSet(false, true)) callback(Result(true, "LG webOS: $name"))
+                    if (done.compareAndSet(false, true)) {
+                        val transport = if (plaintext) "локальный plaintext ws:// pointer" else "WSS pointer"
+                        callback(Result(true, "LG webOS: $name • $transport"))
+                    }
                 }
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     if (done.compareAndSet(false, true)) callback(Result(false, "LG pointer socket: ${t.message ?: t.javaClass.simpleName}"))
@@ -76,8 +84,15 @@ class LgWebOsController(context: Context) {
 
     private fun pointerSocket(host: String, callback: (Result, String?) -> Unit) {
         requestJson(host, "ssap://com.webos.service.networkinput/getPointerInputSocket", null) { ok, message, payload ->
-            val socketPath = payload?.optString("socketPath")?.takeIf { LocalEndpointPolicy.samePrivateHost(host, it, setOf("ws", "wss")) }
-            callback(Result(ok && socketPath != null, if (socketPath != null) "LG pointer socket готов" else "$message • внешний redirect отклонён"), socketPath)
+            val socketPath = payload?.optString("socketPath")?.takeIf {
+                LocalEndpointPolicy.samePrivateHost(host, it, setOf("ws", "wss")) && LocalEndpointPolicy.isInCurrentWifiSubnet(app, host)
+            }
+            val note = when {
+                socketPath == null -> "$message • внешний redirect отклонён"
+                socketPath.startsWith("ws://", true) -> "LG pointer socket готов • TV использует локальный незашифрованный ws:// канал"
+                else -> "LG pointer socket готов • WSS"
+            }
+            callback(Result(ok && socketPath != null, note), socketPath)
         }
     }
 
@@ -86,7 +101,7 @@ class LgWebOsController(context: Context) {
     }
 
     private fun requestJson(host: String, uri: String, payload: JSONObject?, callback: (Boolean, String, JSONObject?) -> Unit) {
-        if (!LocalEndpointPolicy.isPrivateIpv4(host)) return callback(false, "LG: разрешены только private LAN IPv4", null)
+        if (!LocalEndpointPolicy.isInCurrentWifiSubnet(app, host)) return callback(false, "LG: адрес вне текущей Wi-Fi подсети", null)
         openRegistered(host, object : RegisteredCallback {
             override fun ready(webSocket: WebSocket) {
                 val id = "cmd-${System.nanoTime()}"
@@ -114,6 +129,7 @@ class LgWebOsController(context: Context) {
     }
 
     private fun openRegistered(host: String, callback: RegisteredCallback) {
+        if (!LocalEndpointPolicy.isInCurrentWifiSubnet(app, host)) return callback.failed("LG: адрес вне текущей Wi-Fi подсети")
         val done = AtomicBoolean(false)
         var ready = false
         var openedResponse: Response? = null
@@ -166,14 +182,13 @@ class LgWebOsController(context: Context) {
         ))
         val manifest = JSONObject()
             .put("manifestVersion", 1)
-            .put("appVersion", "0.9.4")
-            .put("signed", JSONObject().put("created", "2026-08-20").put("appId", "com.example.universalremote").put("vendorId", "com.example.universalremote").put("localizedAppNames", JSONObject().put("", "Universal Remote")).put("localizedVendorNames", JSONObject().put("", "Universal Remote")).put("permissions", permissions).put("serial", "1"))
+            .put("appVersion", "0.9.6")
+            .put("signed", JSONObject().put("created", "2026-08-23").put("appId", "com.example.universalremote").put("vendorId", "com.example.universalremote").put("localizedAppNames", JSONObject().put("", "Universal Remote")).put("localizedVendorNames", JSONObject().put("", "Universal Remote")).put("permissions", permissions).put("serial", "1"))
             .put("permissions", permissions)
         val payload = JSONObject().put("forcePairing", false).put("pairingType", "PROMPT").put("manifest", manifest)
         if (tofu.isPinned(host)) {
             secrets.getString(keyName(host))?.takeIf { it.isNotBlank() }?.let { payload.put("client-key", it) }
         } else if (secrets.getString(keyName(host)) != null) {
-            // Do not replay a v0.7.0 client-key before the TV certificate has been bound to a fresh approval.
             secrets.remove(keyName(host))
         }
         return JSONObject().put("id", "register-0").put("type", "register").put("payload", payload)
@@ -182,12 +197,13 @@ class LgWebOsController(context: Context) {
     private fun client(host: String): OkHttpClient = clients.getOrPut(host) {
         val trust = tofu.trustManager(host)
         val ssl = tofu.sslContext(host)
-        OkHttpClient.Builder()
+        val builder = OkHttpClient.Builder()
             .connectTimeout(3, TimeUnit.SECONDS)
             .readTimeout(8, TimeUnit.SECONDS)
             .sslSocketFactory(ssl.socketFactory, trust)
             .hostnameVerifier { _, session -> tofu.verifyPinnedSession(host, session) }
-            .build()
+        WifiNetworkResolver.current(app)?.network?.socketFactory?.let { builder.socketFactory(it) }
+        builder.build()
     }
 
     private fun OkHttpClient.closeResources() {
