@@ -1,24 +1,35 @@
 package com.example.universalremote.discovery
 
+import android.content.Context
 import com.example.universalremote.model.ControlCapability
 import com.example.universalremote.model.NearbyDevice
 import com.example.universalremote.network.LocalEndpointPolicy
+import com.example.universalremote.network.WifiNetworkResolver
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.URI
 import kotlin.concurrent.thread
 
-class YeelightDiscovery(private val onDevice: (NearbyDevice) -> Unit) {
+class YeelightDiscovery(
+    context: Context,
+    private val onDevice: (NearbyDevice) -> Unit,
+    private val onStatus: (String) -> Unit = {}
+) {
+    private val app = context.applicationContext
     @Volatile private var running = false
     private var socket: DatagramSocket? = null
 
     fun start() {
         stop()
+        val wifi = WifiNetworkResolver.current(app) ?: return onStatus("Yeelight: Wi-Fi не подключён")
         running = true
         thread(name = "yeelight-discovery") {
             runCatching {
-                socket = DatagramSocket().apply { soTimeout = 1200 }
+                socket = DatagramSocket().apply {
+                    soTimeout = 1200
+                    runCatching { wifi.network.bindSocket(this) }
+                }
                 val query = (
                     "M-SEARCH * HTTP/1.1\r\n" +
                     "HOST: 239.255.255.250:1982\r\n" +
@@ -26,6 +37,7 @@ class YeelightDiscovery(private val onDevice: (NearbyDevice) -> Unit) {
                     "ST: wifi_bulb\r\n\r\n"
                 ).toByteArray(Charsets.UTF_8)
                 socket?.send(DatagramPacket(query, query.size, InetAddress.getByName("239.255.255.250"), 1982))
+                onStatus("Yeelight: multicast через Wi-Fi")
                 val buffer = ByteArray(8192)
                 while (running) {
                     val packet = DatagramPacket(buffer, buffer.size)
@@ -38,7 +50,6 @@ class YeelightDiscovery(private val onDevice: (NearbyDevice) -> Unit) {
                         val uri = runCatching { URI(location) }.getOrNull() ?: return@onSuccess
                         val advertisedHost = uri.host ?: return@onSuccess
                         val advertisedAddress = runCatching { InetAddress.getByName(advertisedHost) }.getOrNull() ?: return@onSuccess
-                        // Never follow a host supplied by the UDP payload. It must resolve to the packet source.
                         if (advertisedAddress != packet.address) return@onSuccess
                         val port = uri.port.takeIf { p -> p in 1..65535 } ?: 55443
                         val name = header(text, "name")?.takeIf { it.isNotBlank() }
@@ -59,7 +70,7 @@ class YeelightDiscovery(private val onDevice: (NearbyDevice) -> Unit) {
                         )
                     }
                 }
-            }
+            }.onFailure { onStatus("Yeelight: ${it.javaClass.simpleName}") }
         }
     }
 

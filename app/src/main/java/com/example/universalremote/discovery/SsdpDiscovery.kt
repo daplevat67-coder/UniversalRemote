@@ -1,23 +1,35 @@
 package com.example.universalremote.discovery
 
+import android.content.Context
 import com.example.universalremote.model.ControlCapability
 import com.example.universalremote.model.NearbyDevice
 import com.example.universalremote.network.LocalEndpointPolicy
+import com.example.universalremote.network.WifiNetworkResolver
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import kotlin.concurrent.thread
 
-class SsdpDiscovery(private val onDevice: (NearbyDevice) -> Unit) {
+class SsdpDiscovery(
+    context: Context,
+    private val onDevice: (NearbyDevice) -> Unit,
+    private val onStatus: (String) -> Unit = {}
+) {
+    private val app = context.applicationContext
     @Volatile private var running = false
     private var socket: DatagramSocket? = null
 
     fun start() {
         stop()
+        val wifi = WifiNetworkResolver.current(app) ?: return onStatus("SSDP: Wi-Fi не подключён")
         running = true
         thread(name = "ssdp-discovery") {
             runCatching {
-                socket = DatagramSocket().apply { soTimeout = 1300 }
+                socket = DatagramSocket().apply {
+                    soTimeout = 1300
+                    runCatching { wifi.network.bindSocket(this) }
+                }
+                onStatus("SSDP: поиск через Wi-Fi")
                 listOf(
                     "ssdp:all",
                     "urn:schemas-upnp-org:device:MediaRenderer:1",
@@ -33,7 +45,9 @@ class SsdpDiscovery(private val onDevice: (NearbyDevice) -> Unit) {
                         val usn = header(text, "USN").orEmpty()
                         val packetHost = packet.address.hostAddress.orEmpty()
                         val rawLocation = header(text, "LOCATION")
-                        val location = rawLocation?.takeIf { packetHost.isNotBlank() && LocalEndpointPolicy.samePrivateHost(packetHost, it, setOf("http", "https")) }
+                        val location = rawLocation?.takeIf {
+                            packetHost.isNotBlank() && LocalEndpointPolicy.samePrivateHost(packetHost, it, setOf("http", "https"))
+                        }
                         val address = location ?: packetHost
                         val descriptor = "$server $st $usn".lowercase()
                         val renderer = "mediarenderer" in descriptor || "renderingcontrol" in descriptor
@@ -74,7 +88,7 @@ class SsdpDiscovery(private val onDevice: (NearbyDevice) -> Unit) {
                         )
                     }
                 }
-            }
+            }.onFailure { onStatus("SSDP: ${it.javaClass.simpleName}") }
         }
     }
 

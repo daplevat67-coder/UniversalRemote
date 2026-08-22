@@ -1,9 +1,8 @@
 package com.example.universalremote.discovery
 
 import android.content.Context
-import android.net.ConnectivityManager
 import android.net.LinkAddress
-import android.net.NetworkCapabilities
+import android.net.Network
 import com.example.universalremote.model.NearbyDevice
 import com.example.universalremote.model.PortService
 import com.example.universalremote.model.ScanConfig
@@ -12,93 +11,93 @@ import com.example.universalremote.network.Ipv4Range
 import com.example.universalremote.network.MacVendorResolver
 import com.example.universalremote.network.NeighborResolver
 import com.example.universalremote.network.TcpProbe
+import com.example.universalremote.network.WifiNetworkResolver
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.Inet4Address
-import java.net.InetAddress
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Two-phase local IPv4 discovery.
- * Phase 1 touches neighbors with one UDP socket and snapshots the kernel neighbor table once.
- * Phase 2 performs only a small protocol-gate probe; the expensive 64-port analysis is deferred
- * until the user opens a device card.
+ * Local IPv4 discovery that stays on the physical Wi-Fi network even when Android's default route
+ * is a VPN. Modern Android often hides ARP/neighbor details from ordinary apps, so discovery uses
+ * three complementary signals:
+ *  1) gateway/DNS from LinkProperties,
+ *  2) one neighbor-table snapshot after a UDP touch sweep,
+ *  3) short TCP presence probes where ECONNREFUSED also counts as proof that the host is alive.
  */
 class LanDiscovery(
     context: Context,
     private val onDevice: (NearbyDevice) -> Unit,
     private val onStatus: (String) -> Unit = {}
 ) {
-    private val connectivity = context.getSystemService(ConnectivityManager::class.java)
+    private val app = context.applicationContext
     private val generation = AtomicInteger(0)
     private val found = AtomicInteger(0)
     private val emitted = ConcurrentHashMap.newKeySet<String>()
-    private var executor = Executors.newFixedThreadPool(24)
+    private var executor = Executors.newFixedThreadPool(32)
 
     fun start(config: ScanConfig = ScanConfig()) {
         stop()
         found.set(0)
         emitted.clear()
         val token = generation.incrementAndGet()
-        val network = connectivity.allNetworks.firstOrNull { n ->
-            connectivity.getNetworkCapabilities(n)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-        } ?: connectivity.activeNetwork ?: return onStatus("нет активной сети")
-        val caps = connectivity.getNetworkCapabilities(network)
-        if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) != true) {
-            return onStatus("Wi‑Fi не подключён — LAN-скан пропущен")
-        }
-        val props = connectivity.getLinkProperties(network) ?: return onStatus("нет параметров IPv4")
-        val local = props.linkAddresses.firstOrNull { it.address is Inet4Address } ?: return onStatus("IPv4 не найден")
+
+        val selection = WifiNetworkResolver.current(app) ?: return onStatus("Wi-Fi не подключён — LAN-скан пропущен")
+        val network = selection.network
+        val props = selection.linkProperties
+        val local = props.linkAddresses.firstOrNull { it.address is Inet4Address } ?: return onStatus("IPv4 Wi-Fi не найден")
         val fullRange = resolveRange(local, config.range) ?: return
         if (!Ipv4Range.isPrivate(fullRange)) return onStatus("разрешены только local/private IPv4")
         if (fullRange.size > MAX_CONFIGURED_RANGE) return onStatus("диапазон слишком большой; максимум $MAX_CONFIGURED_RANGE IPv4")
 
         val own = Ipv4Range.ipv4ToInt(local.address as Inet4Address)
         val activeRange = boundedActiveRange(fullRange, own, MAX_ACTIVE_ADDRESSES)
-
-        // Gateway/DNS are emitted after the single post-sweep neighbor snapshot below.
         val infrastructure = buildSet {
             props.routes.mapNotNullTo(this) { it.gateway as? Inet4Address }
             props.dnsServers.mapNotNullTo(this) { it as? Inet4Address }
         }.filter { Ipv4Range.ipv4ToInt(it) != own }
 
-        executor = Executors.newFixedThreadPool(config.parallelism.coerceIn(8, 48))
+        executor = Executors.newFixedThreadPool(config.parallelism.coerceIn(12, 48))
         val scopeNote = if (activeRange.first == fullRange.first && activeRange.last == fullRange.last) {
             "${fullRange.label}: ${fullRange.size} адресов"
         } else {
-            "${fullRange.label}: ${fullRange.size} адресов; активные пробы ограничены ${activeRange.size}, neighbor-table проверяется по всей подсети"
+            "${fullRange.label}: ${fullRange.size} адресов; активное окно ${activeRange.size}"
         }
-        onStatus("$scopeNote • фаза 1: соседи")
+
+        // Emit infrastructure immediately. In v0.9.2 this happened only after the sweep and made the
+        // UI look completely dead when Android/VPN prevented neighbor-table access.
+        infrastructure.forEach { address ->
+            val host = address.hostAddress ?: return@forEach
+            emitHost(host, emptyList(), null, "Сетевая инфраструктура")
+        }
+        onStatus("$scopeNote • Wi-Fi route locked • быстрый LAN-поиск")
 
         executor.execute {
             if (generation.get() != token) return@execute
-            touchRange(activeRange, own, token)
-            runCatching { Thread.sleep(220L) }
+            touchRange(network, activeRange, own, token)
+            runCatching { Thread.sleep(180L) }
             if (generation.get() != token) return@execute
 
-            // One snapshot for the whole scan: fixes the former ~1024 `ip neigh` process launches.
             val neighborSnapshot = NeighborResolver.snapshot()
             val neighbors = neighborSnapshot.filterKeys { host ->
                 val value = Ipv4Range.parseIp(host) ?: return@filterKeys false
                 inRange(value, fullRange) && value != own
             }
-            infrastructure.forEach { address ->
-                val host = address.hostAddress ?: return@forEach
-                emitHost(host, emptyList(), neighborSnapshot[host], "Сетевая инфраструктура")
-            }
             neighbors.forEach { (host, mac) ->
                 emitHost(host, emptyList(), mac, "LAN neighbor sweep")
-                executor.execute { inspectKnownHost(host, mac, token, config) }
+                executor.execute { inspectKnownHost(network, host, mac, token, config) }
             }
 
-            onStatus("соседей: ${neighbors.size} • фаза 2: быстрые API/службы")
+            onStatus("neighbor: ${neighbors.size} • TCP presence scan")
             var ip = activeRange.first
             while (ip.toUInt() <= activeRange.last.toUInt() && generation.get() == token) {
                 if (ip != own) {
                     val host = Ipv4Range.intToIpv4(ip).hostAddress
-                    if (host != null && host !in neighbors) executor.execute { probeFallback(host, token, config) }
+                    if (host != null && host !in neighbors) {
+                        executor.execute { probeFallback(network, host, token, config) }
+                    }
                 }
                 if (ip == Int.MAX_VALUE) break
                 ip++
@@ -111,36 +110,55 @@ class LanDiscovery(
         executor.shutdownNow()
     }
 
-    private fun inspectKnownHost(host: String, mac: String?, token: Int, config: ScanConfig) {
+    private fun inspectKnownHost(network: Network, host: String, mac: String?, token: Int, config: ScanConfig) {
         if (generation.get() != token || Thread.currentThread().isInterrupted) return
-        val timeout = config.connectTimeoutMs.coerceIn(80, 700)
+        val timeout = config.connectTimeoutMs.coerceIn(80, 500)
         val ports = CONTROL_DISCOVERY_PORTS.mapNotNull { port ->
             if (generation.get() != token || Thread.currentThread().isInterrupted) null
-            else if (TcpProbe.isOpen(host, port, timeout)) PortService(port, TcpProbe.serviceName(port)) else null
+            else if (TcpProbe.isOpen(network, host, port, timeout)) PortService(port, TcpProbe.serviceName(port)) else null
         }
-        emitHost(host, ports, mac, "LAN neighbor + быстрые управляющие порты")
+        emitHost(host, ports, mac, "LAN neighbor + управляющие порты")
     }
 
-    private fun probeFallback(host: String, token: Int, config: ScanConfig) {
+    /**
+     * Active fallback for Android versions where ARP/neighbor data is inaccessible to normal apps.
+     * A successful TCP connect is obvious evidence. A quick ECONNREFUSED is also evidence because
+     * only a live IP can actively reject our SYN. Timeouts/unreachable errors are not emitted.
+     */
+    private fun probeFallback(network: Network, host: String, token: Int, config: ScanConfig) {
         if (generation.get() != token || Thread.currentThread().isInterrupted) return
-        val address = runCatching { InetAddress.getByName(host) }.getOrNull() ?: return
-        val timeout = config.connectTimeoutMs.coerceIn(80, 500)
-        val reachable = runCatching { address.isReachable(timeout) }.getOrDefault(false)
-        var firstPort: Int? = null
-        if (!reachable) {
-            for (port in FAST_GATE_PORTS) {
-                if (generation.get() != token || Thread.currentThread().isInterrupted) return
-                if (TcpProbe.isOpen(host, port, timeout)) { firstPort = port; break }
+        val quickTimeout = config.connectTimeoutMs.coerceIn(80, 120)
+        var alive = false
+        var firstOpen: Int? = null
+
+        for (port in PRESENCE_PORTS) {
+            if (generation.get() != token || Thread.currentThread().isInterrupted) return
+            when (TcpProbe.presence(network, host, port, quickTimeout)) {
+                TcpProbe.Presence.OPEN -> {
+                    alive = true
+                    firstOpen = port
+                    break
+                }
+                TcpProbe.Presence.REFUSED -> {
+                    alive = true
+                    break
+                }
+                TcpProbe.Presence.NO_EVIDENCE -> Unit
             }
         }
-        if (!reachable && firstPort == null) return
-        val ports = firstPort?.let { listOf(PortService(it, TcpProbe.serviceName(it))) }.orEmpty()
-        emitHost(host, ports, null, if (reachable) "LAN reachability" else "LAN protocol gate")
+        if (!alive) return
+
+        val seedPorts = firstOpen?.let { listOf(PortService(it, TcpProbe.serviceName(it))) }.orEmpty()
+        emitHost(host, seedPorts, null, if (firstOpen != null) "LAN TCP service" else "LAN TCP presence")
+
+        // Only hosts that already proved they are alive get the more expensive protocol check.
+        inspectKnownHost(network, host, null, token, config.copy(connectTimeoutMs = quickTimeout.coerceAtLeast(100)))
     }
 
-    private fun touchRange(range: Ipv4Range.Parsed, own: Int, token: Int) {
+    private fun touchRange(network: Network, range: Ipv4Range.Parsed, own: Int, token: Int) {
         runCatching {
             DatagramSocket().use { socket ->
+                runCatching { network.bindSocket(socket) }
                 val one = byteArrayOf(0)
                 var ip = range.first
                 while (ip.toUInt() <= range.last.toUInt() && generation.get() == token && !Thread.currentThread().isInterrupted) {
@@ -162,7 +180,8 @@ class LanDiscovery(
         onDevice(
             NearbyDevice(
                 id = "lan:$host",
-                name = vendor?.let { "$it • $host" } ?: if (protocol == "Сетевая инфраструктура") "Маршрутизатор / DNS • $host" else "Устройство $host",
+                name = vendor?.let { "$it • $host" }
+                    ?: if (protocol == "Сетевая инфраструктура") "Маршрутизатор / DNS • $host" else "Устройство $host",
                 kind = kind,
                 protocol = protocol,
                 address = host,
@@ -174,8 +193,9 @@ class LanDiscovery(
                 osHint = os,
                 analysisNote = when {
                     ports.isNotEmpty() -> "Быстрый discovery: найдено ${ports.size} характерных TCP-служб; полный анализ запускается из карточки"
-                    mac != null -> "Обнаружено через общую таблицу сетевых соседей; полный port scan не выполнялся"
-                    else -> "Хост отвечает в локальной сети; подробный анализ отложен до открытия карточки"
+                    mac != null -> "Обнаружено через таблицу сетевых соседей; полный port scan не выполнялся"
+                    protocol == "LAN TCP presence" -> "Хост активно отклонил TCP-подключение: IP подтверждён даже без открытого управляющего порта"
+                    else -> "Хост подтверждён в локальной Wi-Fi сети; подробный анализ отложен до открытия карточки"
                 },
                 securityFindings = DeviceAnalyzer.securityFindings(ports)
             )
@@ -234,11 +254,14 @@ class LanDiscovery(
         value.toUInt() >= range.first.toUInt() && value.toUInt() <= range.last.toUInt()
 
     companion object {
-        private const val MAX_ACTIVE_ADDRESSES = 1024
+        private const val MAX_ACTIVE_ADDRESSES = 2048
         private const val MAX_CONFIGURED_RANGE = 65534
-        private val CONTROL_DISCOVERY_PORTS = listOf(45123, 62078, 6466, 6467, 8060, 8002, 8001, 3001, 3000, 8009, 8008, 55443, 4352)
-        // Crucially includes every supported remote endpoint before a host can be discarded.
-        private val FAST_GATE_PORTS = CONTROL_DISCOVERY_PORTS + listOf(80, 443, 22, 445, 554, 631, 3389, 9100, 1883)
-        private val MOBILE_VENDOR_HINTS = setOf("Apple", "Google", "Xiaomi", "Huawei")
+        private val CONTROL_DISCOVERY_PORTS = listOf(
+            45123, 62078, 6466, 6467, 8060, 8002, 8001, 3001, 3000, 8009, 8008,
+            55443, 4352, 80, 443, 22, 445, 554, 631, 3389, 9100, 1883
+        )
+        // Representative ports: closed ports often return ECONNREFUSED immediately and prove liveness.
+        private val PRESENCE_PORTS = listOf(45123, 8009, 8060, 8002, 6466, 80, 443, 22)
+        private val MOBILE_VENDOR_HINTS = setOf("Apple", "Google", "Xiaomi", "Huawei", "Samsung")
     }
 }

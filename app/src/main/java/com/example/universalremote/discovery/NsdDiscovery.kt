@@ -1,13 +1,17 @@
 package com.example.universalremote.discovery
 
 import android.content.Context
+import android.net.Network
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import androidx.annotation.RequiresApi
 import com.example.universalremote.model.ControlCapability
 import com.example.universalremote.model.NearbyDevice
 import com.example.universalremote.network.LocalEndpointPolicy
+import com.example.universalremote.network.WifiNetworkResolver
 import java.util.ArrayDeque
 
 /** mDNS discovery with staggered service starts and a serialized resolve queue. */
@@ -16,7 +20,8 @@ class NsdDiscovery(
     private val onDevice: (NearbyDevice) -> Unit,
     private val onDiagnostic: (String) -> Unit = {}
 ) {
-    private val manager = context.getSystemService(NsdManager::class.java)
+    private val app = context.applicationContext
+    private val manager = app.getSystemService(NsdManager::class.java)
     private val handler = Handler(Looper.getMainLooper())
     private val listeners = mutableListOf<NsdManager.DiscoveryListener>()
     private val resolveQueue = ArrayDeque<NsdServiceInfo>()
@@ -61,8 +66,21 @@ class NsdDiscovery(
             override fun onServiceFound(service: NsdServiceInfo) = enqueueResolve(service)
         }
         listeners += listener
-        runCatching { manager.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, listener) }
-            .onFailure { onDiagnostic("mDNS $type: ${it.javaClass.simpleName}") }
+        runCatching {
+            val wifi = WifiNetworkResolver.current(app)
+            if (Build.VERSION.SDK_INT >= 33 && wifi != null) {
+                discoverOnNetwork(type, wifi.network, listener)
+            } else {
+                @Suppress("DEPRECATION")
+                manager.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, listener)
+            }
+        }.onFailure { onDiagnostic("mDNS $type: ${it.javaClass.simpleName}") }
+    }
+
+
+    @RequiresApi(33)
+    private fun discoverOnNetwork(type: String, network: Network, listener: NsdManager.DiscoveryListener) {
+        manager.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, network, { command -> handler.post(command) }, listener)
     }
 
     @Synchronized

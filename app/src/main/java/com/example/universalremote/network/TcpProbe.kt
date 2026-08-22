@@ -1,12 +1,18 @@
 package com.example.universalremote.network
 
+import android.net.Network
 import com.example.universalremote.model.PortService
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
+import java.net.ConnectException
 import java.net.InetSocketAddress
+import java.net.NoRouteToHostException
 import java.net.Socket
+import java.net.SocketTimeoutException
 
 object TcpProbe {
+    enum class Presence { OPEN, REFUSED, NO_EVIDENCE }
+
     private val names = mapOf(
         20 to "FTP-data", 21 to "FTP", 22 to "SSH", 23 to "Telnet", 25 to "SMTP",
         53 to "DNS", 80 to "HTTP", 110 to "POP3", 139 to "NetBIOS", 143 to "IMAP",
@@ -18,15 +24,43 @@ object TcpProbe {
         8883 to "MQTT TLS", 9100 to "JetDirect", 55443 to "Yeelight LAN Control", 62078 to "Apple Mobile Device / Wi-Fi Sync"
     )
 
-    fun isOpen(host: String, port: Int, timeoutMs: Int): Boolean = runCatching {
-        Socket().use { socket ->
+    fun isOpen(host: String, port: Int, timeoutMs: Int): Boolean = isOpen(null, host, port, timeoutMs)
+
+    /** Uses [network] when supplied so a VPN cannot steal local-LAN TCP probes. */
+    fun isOpen(network: Network?, host: String, port: Int, timeoutMs: Int): Boolean = runCatching {
+        createSocket(network).use { socket ->
             socket.connect(InetSocketAddress(host, port), timeoutMs)
             true
         }
     }.getOrDefault(false)
 
-    fun inspect(host: String, port: Int, connectTimeoutMs: Int, bannerTimeoutMs: Int): PortService? = runCatching {
-        Socket().use { socket ->
+    /**
+     * A TCP RST/ECONNREFUSED proves that an IP is alive even though the tested port is closed.
+     * This is much more useful on modern Android than relying on /proc/net/arp or ICMP reachability.
+     */
+    fun presence(network: Network?, host: String, port: Int, timeoutMs: Int): Presence {
+        val socket = runCatching { createSocket(network) }.getOrNull() ?: return Presence.NO_EVIDENCE
+        return try {
+            socket.use { it.connect(InetSocketAddress(host, port), timeoutMs) }
+            Presence.OPEN
+        } catch (e: SocketTimeoutException) {
+            Presence.NO_EVIDENCE
+        } catch (e: NoRouteToHostException) {
+            Presence.NO_EVIDENCE
+        } catch (e: ConnectException) {
+            if (isRefused(e)) Presence.REFUSED else Presence.NO_EVIDENCE
+        } catch (_: Throwable) {
+            Presence.NO_EVIDENCE
+        } finally {
+            runCatching { socket.close() }
+        }
+    }
+
+    fun inspect(host: String, port: Int, connectTimeoutMs: Int, bannerTimeoutMs: Int): PortService? =
+        inspect(null, host, port, connectTimeoutMs, bannerTimeoutMs)
+
+    fun inspect(network: Network?, host: String, port: Int, connectTimeoutMs: Int, bannerTimeoutMs: Int): PortService? = runCatching {
+        createSocket(network).use { socket ->
             socket.connect(InetSocketAddress(host, port), connectTimeoutMs)
             socket.soTimeout = bannerTimeoutMs
             val service = names[port] ?: "TCP"
@@ -40,6 +74,18 @@ object TcpProbe {
             PortService(port, service, banner)
         }
     }.getOrNull()
+
+    private fun createSocket(network: Network?): Socket = network?.socketFactory?.createSocket() ?: Socket()
+
+    private fun isRefused(error: Throwable): Boolean {
+        var current: Throwable? = error
+        while (current != null) {
+            val msg = current.message.orEmpty()
+            if (msg.contains("ECONNREFUSED", true) || msg.contains("Connection refused", true)) return true
+            current = current.cause
+        }
+        return false
+    }
 
     private fun httpBanner(socket: Socket, host: String): String? {
         val out = BufferedOutputStream(socket.getOutputStream())
