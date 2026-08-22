@@ -21,15 +21,15 @@ class SsdpDiscovery(
 
     fun start() {
         stop()
-        val wifi = WifiNetworkResolver.current(app) ?: return onStatus("SSDP: Wi-Fi не подключён")
+        val wifi = WifiNetworkResolver.current(app)
         running = true
         thread(name = "ssdp-discovery") {
             runCatching {
                 socket = DatagramSocket().apply {
                     soTimeout = 1300
-                    runCatching { wifi.network.bindSocket(this) }
+                    if (wifi != null) runCatching { wifi.network.bindSocket(this) }
                 }
-                onStatus("SSDP: поиск через Wi-Fi")
+                onStatus(if (wifi != null) "SSDP: поиск через Wi-Fi" else "SSDP: системный multicast fallback")
                 listOf(
                     "ssdp:all",
                     "urn:schemas-upnp-org:device:MediaRenderer:1",

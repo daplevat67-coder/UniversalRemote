@@ -1,7 +1,6 @@
 package com.example.universalremote.discovery
 
 import android.content.Context
-import android.net.LinkAddress
 import android.net.Network
 import com.example.universalremote.model.NearbyDevice
 import com.example.universalremote.model.PortService
@@ -44,20 +43,18 @@ class LanDiscovery(
         emitted.clear()
         val token = generation.incrementAndGet()
 
-        val selection = WifiNetworkResolver.current(app) ?: return onStatus("Wi-Fi не подключён — LAN-скан пропущен")
-        val network = selection.network
-        val props = selection.linkProperties
-        val local = props.linkAddresses.firstOrNull { it.address is Inet4Address } ?: return onStatus("IPv4 Wi-Fi не найден")
-        val fullRange = resolveRange(local, config.range) ?: return
+        val lan = WifiNetworkResolver.lanInfo(app) ?: return onStatus("LAN: локальная IPv4 сеть не найдена")
+        val network = lan.network
+        val local = lan.ipv4
+        val fullRange = resolveRange(local, lan.prefixLength, config.range) ?: return
         if (!Ipv4Range.isPrivate(fullRange)) return onStatus("разрешены только local/private IPv4")
         if (fullRange.size > MAX_CONFIGURED_RANGE) return onStatus("диапазон слишком большой; максимум $MAX_CONFIGURED_RANGE IPv4")
 
-        val own = Ipv4Range.ipv4ToInt(local.address as Inet4Address)
+        val own = Ipv4Range.ipv4ToInt(local)
         val activeRange = boundedActiveRange(fullRange, own, MAX_ACTIVE_ADDRESSES)
-        val infrastructure = buildSet {
-            props.routes.mapNotNullTo(this) { it.gateway as? Inet4Address }
-            props.dnsServers.mapNotNullTo(this) { it as? Inet4Address }
-        }.filter { Ipv4Range.ipv4ToInt(it) != own }
+        val infrastructure = (lan.gateways + lan.dnsServers)
+            .distinct()
+            .filter { Ipv4Range.ipv4ToInt(it) != own }
 
         executor = Executors.newFixedThreadPool(config.parallelism.coerceIn(12, 48))
         val scopeNote = if (activeRange.first == fullRange.first && activeRange.last == fullRange.last) {
@@ -72,7 +69,7 @@ class LanDiscovery(
             val host = address.hostAddress ?: return@forEach
             emitHost(host, emptyList(), null, "Сетевая инфраструктура")
         }
-        onStatus("$scopeNote • Wi-Fi route locked • быстрый LAN-поиск")
+        onStatus("$scopeNote • ${lan.label} • быстрый LAN-поиск")
 
         executor.execute {
             if (generation.get() != token) return@execute
@@ -110,7 +107,7 @@ class LanDiscovery(
         executor.shutdownNow()
     }
 
-    private fun inspectKnownHost(network: Network, host: String, mac: String?, token: Int, config: ScanConfig) {
+    private fun inspectKnownHost(network: Network?, host: String, mac: String?, token: Int, config: ScanConfig) {
         if (generation.get() != token || Thread.currentThread().isInterrupted) return
         val timeout = config.connectTimeoutMs.coerceIn(80, 500)
         val ports = CONTROL_DISCOVERY_PORTS.mapNotNull { port ->
@@ -125,9 +122,9 @@ class LanDiscovery(
      * A successful TCP connect is obvious evidence. A quick ECONNREFUSED is also evidence because
      * only a live IP can actively reject our SYN. Timeouts/unreachable errors are not emitted.
      */
-    private fun probeFallback(network: Network, host: String, token: Int, config: ScanConfig) {
+    private fun probeFallback(network: Network?, host: String, token: Int, config: ScanConfig) {
         if (generation.get() != token || Thread.currentThread().isInterrupted) return
-        val quickTimeout = config.connectTimeoutMs.coerceIn(80, 120)
+        val quickTimeout = config.connectTimeoutMs.coerceIn(180, 350)
         var alive = false
         var firstOpen: Int? = null
 
@@ -155,10 +152,10 @@ class LanDiscovery(
         inspectKnownHost(network, host, null, token, config.copy(connectTimeoutMs = quickTimeout.coerceAtLeast(100)))
     }
 
-    private fun touchRange(network: Network, range: Ipv4Range.Parsed, own: Int, token: Int) {
+    private fun touchRange(network: Network?, range: Ipv4Range.Parsed, own: Int, token: Int) {
         runCatching {
             DatagramSocket().use { socket ->
-                runCatching { network.bindSocket(socket) }
+                if (network != null) runCatching { network.bindSocket(socket) }
                 val one = byteArrayOf(0)
                 var ip = range.first
                 while (ip.toUInt() <= range.last.toUInt() && generation.get() == token && !Thread.currentThread().isInterrupted) {
@@ -224,15 +221,15 @@ class LanDiscovery(
         }
     }
 
-    private fun resolveRange(local: LinkAddress, configured: String): Ipv4Range.Parsed? {
+    private fun resolveRange(local: Inet4Address, prefixLength: Int, configured: String): Ipv4Range.Parsed? {
         val value = configured.trim()
         if (value.isNotBlank() && !value.equals("auto", true)) {
             val parsed = Ipv4Range.parse(value)
             if (parsed == null) onStatus("диапазон: используйте CIDR или IP-IP")
             return parsed
         }
-        val own = Ipv4Range.ipv4ToInt(local.address as Inet4Address)
-        val prefix = local.prefixLength.coerceIn(8, 30)
+        val own = Ipv4Range.ipv4ToInt(local)
+        val prefix = prefixLength.coerceIn(8, 30)
         val mask = (-1 shl (32 - prefix))
         val network = own and mask
         val broadcast = network or mask.inv()
@@ -254,7 +251,7 @@ class LanDiscovery(
         value.toUInt() >= range.first.toUInt() && value.toUInt() <= range.last.toUInt()
 
     companion object {
-        private const val MAX_ACTIVE_ADDRESSES = 2048
+        private const val MAX_ACTIVE_ADDRESSES = 1024
         private const val MAX_CONFIGURED_RANGE = 65534
         private val CONTROL_DISCOVERY_PORTS = listOf(
             45123, 62078, 6466, 6467, 8060, 8002, 8001, 3001, 3000, 8009, 8008,

@@ -149,7 +149,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(26), dp(18), dp(14))
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c("#07111F"), c("#101B35"), c("#132842")))
         }
-        root.addView(text("UNIVERSAL REMOTE • v0.9.4", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+        root.addView(text("UNIVERSAL REMOTE • v0.9.5", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
         root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
         root.addView(text("Двухфазный LAN-поиск • Android + iOS/iPadOS Companion • Apple/Bonjour • API verification • TV • Cast • Hue • Yeelight • WLED", 13f, c("#AABBD4"), false))
 
@@ -181,6 +181,7 @@ class MainActivity : AppCompatActivity() {
         tools.addView(smallButton("НАСТРОЙКИ СКАНЕРА") { showSettings() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginStart = dp(5) })
         root.addView(tools)
         root.addView(smallButton("РУЧНОЙ IP / ПРОВЕРКА УПРАВЛЕНИЯ") { showManualControl() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
+        root.addView(smallButton("ДИАГНОСТИКА ПОИСКА") { showDiscoveryDiagnostics() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
         root.addView(smallButton("📱 КАК УПРАВЛЯТЬ ANDROID-ТЕЛЕФОНОМ") { showCompanionHelp() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
         root.addView(smallButton("🍎 IPHONE / IPAD • БЕЗ ПРИЛОЖЕНИЯ И С COMPANION") { showIosHelp() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(8)) })
 
@@ -239,14 +240,14 @@ class MainActivity : AppCompatActivity() {
         stopScan()
         devices.clear()
         sourceStatus.clear()
-        val route = WifiNetworkResolver.bindProcessToWifi(this)
-        sourceStatus["Маршрут"] = route.message
+        val lanInfo = WifiNetworkResolver.lanInfo(this)
+        sourceStatus["LAN"] = lanInfo?.label ?: "локальная IPv4 сеть не определена"
         adapter.submitList(emptyList())
         count.text = "…"
-        hint.text = if (route.bound) {
-            "сканируем Bluetooth, Wi‑Fi эфир и LAN • ${route.message}"
+        hint.text = if (lanInfo != null) {
+            "сканируем Bluetooth, Wi‑Fi эфир и LAN • ${lanInfo.label}"
         } else {
-            "сканируем • ${route.message}; LAN-подключения могут блокироваться VPN"
+            "сканируем радио • LAN IPv4 не определён; откройте диагностику"
         }
         scanButton.text = "ПОИСК ИДЁТ…"
         acquireMulticast()
@@ -255,7 +256,7 @@ class MainActivity : AppCompatActivity() {
         if (prefs.getBoolean("wifi_radio", true)) runCatching { wifiDiscovery.start() }.onFailure { updateSourceStatus("Wi‑Fi", it.javaClass.simpleName) }
         if (prefs.getBoolean("mdns", true)) runCatching { nsd.start() }
         if (prefs.getBoolean("ssdp", true)) runCatching { ssdp.start() }
-        if (prefs.getBoolean("lan", true)) runCatching { lan.start(loadScanConfig()) }
+        if (prefs.getBoolean("lan", true)) runCatching { lan.start(effectiveScanConfig()) }
         if (prefs.getBoolean("pjlink", true)) runCatching { pjDiscovery.start() }
         if (prefs.getBoolean("yeelight", true)) runCatching { yeelightDiscovery.start() }.onFailure { updateSourceStatus("Yeelight", it.javaClass.simpleName) }
         val duration = prefs.getInt("scan_duration", 35).coerceIn(10, 120)
@@ -459,6 +460,60 @@ class MainActivity : AppCompatActivity() {
         ports = parsePorts(prefs.getString("ports", ScanConfig.DEFAULT_PORTS.joinToString(",")) ?: "").ifEmpty { ScanConfig.DEFAULT_PORTS },
         scanPorts = prefs.getBoolean("scan_ports", true)
     )
+
+    private fun effectiveScanConfig(): ScanConfig {
+        val cfg = loadScanConfig()
+        val info = WifiNetworkResolver.lanInfo(this) ?: return cfg
+        if (cfg.range.equals("auto", true) || cfg.range.isBlank()) return cfg
+        val parsed = Ipv4Range.parse(cfg.range) ?: return cfg.copy(range = "auto")
+        val own = Ipv4Range.ipv4ToInt(info.ipv4).toUInt()
+        val inside = own >= parsed.first.toUInt() && own <= parsed.last.toUInt()
+        if (inside) return cfg
+        updateSourceStatus("LAN", "сохранённый диапазон ${cfg.range} не содержит ${info.ipv4.hostAddress}; временно auto")
+        return cfg.copy(range = "auto")
+    }
+
+    private fun showDiscoveryDiagnostics() {
+        val info = WifiNetworkResolver.lanInfo(this)
+        val location = getSystemService(android.location.LocationManager::class.java)
+        val locationOn = if (Build.VERSION.SDK_INT >= 28) location?.isLocationEnabled == true else true
+        val lines = mutableListOf<String>()
+        lines += "Версия: 0.9.5"
+        lines += "LAN: ${info?.label ?: "НЕ НАЙДЕН"}"
+        lines += "Gateway: ${info?.gateways?.joinToString { it.hostAddress ?: "?" }?.ifBlank { "—" } ?: "—"}"
+        lines += "DNS: ${info?.dnsServers?.joinToString { it.hostAddress ?: "?" }?.ifBlank { "—" } ?: "—"}"
+        lines += "Геолокация Android: ${if (locationOn) "ВКЛ" else "ВЫКЛ"}"
+        lines += "Fine location: ${if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) "OK" else "НЕТ"}"
+        if (Build.VERSION.SDK_INT >= 31) {
+            lines += "Bluetooth scan: ${if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED) "OK" else "НЕТ"}"
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            lines += "Nearby Wi-Fi: ${if (checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED) "OK" else "НЕТ"}"
+        }
+        lines += "Диапазон: ${prefs.getString("ip_range", "auto") ?: "auto"}"
+        lines += "Источники: BLE=${prefs.getBoolean("ble", true)}, BT=${prefs.getBoolean("classic", true)}, Wi-Fi=${prefs.getBoolean("wifi_radio", true)}, mDNS=${prefs.getBoolean("mdns", true)}, SSDP=${prefs.getBoolean("ssdp", true)}, LAN=${prefs.getBoolean("lan", true)}"
+        AlertDialog.Builder(this)
+            .setTitle("Диагностика поиска")
+            .setMessage(lines.joinToString("\n"))
+            .setNegativeButton("Закрыть", null)
+            .setPositiveButton("Сбросить сканер") { _, _ ->
+                prefs.edit()
+                    .putString("ip_range", "auto")
+                    .putInt("connect_timeout", 300)
+                    .putInt("parallelism", 32)
+                    .putBoolean("ble", true)
+                    .putBoolean("classic", true)
+                    .putBoolean("wifi_radio", true)
+                    .putBoolean("mdns", true)
+                    .putBoolean("ssdp", true)
+                    .putBoolean("lan", true)
+                    .putBoolean("pjlink", true)
+                    .putBoolean("yeelight", true)
+                    .apply()
+                requestAndScan()
+            }
+            .show()
+    }
 
     private fun parsePorts(value: String): List<Int> = value.split(',', ';', ' ', '\n')
         .mapNotNull { it.trim().toIntOrNull() }
@@ -810,7 +865,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun showCompanionHelp() {
         AlertDialog.Builder(this)
-            .setTitle("Android Companion • v0.9.4")
+            .setTitle("Android Companion • v0.9.5")
             .setMessage("Для управления вторым Android-телефоном установите на него companion-debug.apk из того же GitHub Actions artifact. На втором телефоне откройте Companion → Запустить Companion. Затем здесь запустите поиск, откройте карточку телефона и введите одноразовый 12-символьный код.\n\nГромкость и media работают после pairing. Home/Back/Recents требуют вручную включить Accessibility на управляемом телефоне. PIN/пароль блокировки не используется и не обходится.")
             .setPositiveButton("Понятно", null)
             .show()

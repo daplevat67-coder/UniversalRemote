@@ -23,22 +23,22 @@ class PjLinkDiscovery(
 
     fun start() {
         stop()
-        val wifi = WifiNetworkResolver.current(app) ?: return onStatus("PJLink: Wi-Fi не подключён")
+        val wifi = WifiNetworkResolver.current(app)
         running = true
         thread(name = "pjlink-discovery") {
             val localSocket = runCatching {
                 DatagramSocket().apply {
                     broadcast = true
                     soTimeout = 1100
-                    runCatching { wifi.network.bindSocket(this) }
+                    if (wifi != null) runCatching { wifi.network.bindSocket(this) }
                 }
             }.getOrNull() ?: return@thread
             socket = localSocket
             runCatching {
-                val broadcastAddress = currentBroadcast(wifi.linkProperties) ?: InetAddress.getByName("255.255.255.255")
+                val broadcastAddress = wifi?.let { currentBroadcast(it.linkProperties) } ?: InetAddress.getByName("255.255.255.255")
                 val command = "%2SRCH\r".toByteArray(Charsets.US_ASCII)
                 localSocket.send(DatagramPacket(command, command.size, broadcastAddress, 4352))
-                onStatus("PJLink: broadcast через Wi-Fi")
+                onStatus(if (wifi != null) "PJLink: broadcast через Wi-Fi" else "PJLink: global broadcast fallback")
                 val buffer = ByteArray(512)
                 val deadline = System.currentTimeMillis() + 12_000L
                 while (running && socket === localSocket && System.currentTimeMillis() < deadline) {

@@ -22,13 +22,13 @@ class YeelightDiscovery(
 
     fun start() {
         stop()
-        val wifi = WifiNetworkResolver.current(app) ?: return onStatus("Yeelight: Wi-Fi не подключён")
+        val wifi = WifiNetworkResolver.current(app)
         running = true
         thread(name = "yeelight-discovery") {
             runCatching {
                 socket = DatagramSocket().apply {
                     soTimeout = 1200
-                    runCatching { wifi.network.bindSocket(this) }
+                    if (wifi != null) runCatching { wifi.network.bindSocket(this) }
                 }
                 val query = (
                     "M-SEARCH * HTTP/1.1\r\n" +
@@ -37,7 +37,7 @@ class YeelightDiscovery(
                     "ST: wifi_bulb\r\n\r\n"
                 ).toByteArray(Charsets.UTF_8)
                 socket?.send(DatagramPacket(query, query.size, InetAddress.getByName("239.255.255.250"), 1982))
-                onStatus("Yeelight: multicast через Wi-Fi")
+                onStatus(if (wifi != null) "Yeelight: multicast через Wi-Fi" else "Yeelight: системный multicast fallback")
                 val buffer = ByteArray(8192)
                 while (running) {
                     val packet = DatagramPacket(buffer, buffer.size)

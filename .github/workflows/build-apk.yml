@@ -12,7 +12,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      VERSION: 0.9.4
+      VERSION: 0.9.5
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -49,7 +49,7 @@ jobs:
       - name: Upload installable APKs
         uses: actions/upload-artifact@v6
         with:
-          name: UniversalRemote-v0.9.4-APKs
+          name: UniversalRemote-v0.9.5-APKs
           if-no-files-found: error
           retention-days: 30
           path: dist/android/
@@ -82,7 +82,7 @@ jobs:
         if: env.ANDROID_KEYSTORE_BASE64 != ''
         uses: actions/upload-artifact@v6
         with:
-          name: UniversalRemote-v0.9.4-signed-release-APKs
+          name: UniversalRemote-v0.9.5-signed-release-APKs
           if-no-files-found: error
           retention-days: 30
           path: dist/android-release/
