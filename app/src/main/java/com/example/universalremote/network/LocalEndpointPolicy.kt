@@ -68,7 +68,7 @@ object LocalEndpointPolicy {
 
     private fun literalIpv4(host: String): Inet4Address? {
         val value = Ipv4Range.parseIp(host.trim()) ?: return null
-        return Ipv4Range.intToIpv4(value)
+        return Ipv4Range.intToIpv4(value) as? Inet4Address
     }
 
     private fun samePrefix(a: ByteArray, b: ByteArray, prefixLength: Int): Boolean {
