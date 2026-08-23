@@ -36,3 +36,5 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.universalremote.ioscompanion.tests
         SWIFT_VERSION: 5.9
         GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/UniversalRemote iOS Companion.app/UniversalRemote iOS Companion"
+        BUNDLE_LOADER: "$(TEST_HOST)"
