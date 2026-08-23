@@ -107,8 +107,6 @@ class MainActivity : AppCompatActivity() {
     private val stopLanAfterGrace = Runnable { runCatching { lan.stop() } }
 
     private val finishScan = Runnable {
-        // Radio/multicast windows are time-bounded, but LAN gets an extra grace period so a /22 sweep
-        // is not killed merely because the UI discovery timer expired.
         stopShortSources()
         handler.removeCallbacks(stopLanAfterGrace)
         handler.postDelayed(stopLanAfterGrace, 60_000L)
@@ -149,9 +147,9 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(26), dp(18), dp(14))
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c("#07111F"), c("#101B35"), c("#132842")))
         }
-        root.addView(text("UNIVERSAL REMOTE • v0.9.5", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+        root.addView(text("UNIVERSAL REMOTE • v${BuildConfig.VERSION_NAME}", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
         root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
-        root.addView(text("Двухфазный LAN-поиск • Android + iOS/iPadOS Companion • Apple/Bonjour • API verification • TV • Cast • Hue • Yeelight • WLED", 13f, c("#AABBD4"), false))
+        root.addView(text("Автоподключение по штатным LAN API • без пароля там, где устройство это разрешает • PIN / pairing / пароль там, где они обязательны", 13f, c("#AABBD4"), false))
 
         val radar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -180,7 +178,7 @@ class MainActivity : AppCompatActivity() {
         tools.addView(smallButton("ФИЛЬТРЫ") { showFilters() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(5) })
         tools.addView(smallButton("НАСТРОЙКИ СКАНЕРА") { showSettings() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginStart = dp(5) })
         root.addView(tools)
-        root.addView(smallButton("РУЧНОЙ IP / ПРОВЕРКА УПРАВЛЕНИЯ") { showManualControl() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
+        root.addView(smallButton("РУЧНОЙ IP / ПОДКЛЮЧЕНИЕ") { showManualControl() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
         root.addView(smallButton("ДИАГНОСТИКА ПОИСКА") { showDiscoveryDiagnostics() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
         root.addView(smallButton("📱 КАК УПРАВЛЯТЬ ANDROID-ТЕЛЕФОНОМ") { showCompanionHelp() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
         root.addView(smallButton("🍎 IPHONE / IPAD • БЕЗ ПРИЛОЖЕНИЯ И С COMPANION") { showIosHelp() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(8)) })
@@ -220,7 +218,6 @@ class MainActivity : AppCompatActivity() {
                 add(Manifest.permission.BLUETOOTH_CONNECT)
             }
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.NEARBY_WIFI_DEVICES)
-            // Wi-Fi scan results can reveal location, so Android still requires precise location.
             add(Manifest.permission.ACCESS_COARSE_LOCATION)
             add(Manifest.permission.ACCESS_FINE_LOCATION)
         }.toTypedArray()
@@ -229,8 +226,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun ensureDiscoverySourcesEnabled() {
         val keys = listOf("ble", "classic", "wifi_radio", "mdns", "ssdp", "lan", "pjlink", "yeelight")
-        // A saved configuration with every source disabled makes the scan button legitimately return 0.
-        // Recover from that state automatically instead of leaving the UI apparently broken.
         if (keys.all { prefs.contains(it) && !prefs.getBoolean(it, true) }) {
             prefs.edit().apply { keys.forEach { putBoolean(it, true) } }.apply()
         }
@@ -302,8 +297,6 @@ class MainActivity : AppCompatActivity() {
 
         var candidate = incoming
         if (host != null && !incoming.protocol.startsWith("LAN")) {
-            // One physical host can advertise itself through mDNS + SSDP + dedicated discovery.
-            // Merge all network-protocol records for the same IPv4 into one card instead of duplicating it.
             val sameHostIds = devices.values
                 .filter { existing ->
                     existing.id != incoming.id &&
@@ -478,7 +471,7 @@ class MainActivity : AppCompatActivity() {
         val location = getSystemService(android.location.LocationManager::class.java)
         val locationOn = if (Build.VERSION.SDK_INT >= 28) location?.isLocationEnabled == true else true
         val lines = mutableListOf<String>()
-        lines += "Версия: 0.9.5"
+        lines += "Версия: ${BuildConfig.VERSION_NAME}"
         lines += "LAN: ${info?.label ?: "НЕ НАЙДЕН"}"
         lines += "Gateway: ${info?.gateways?.joinToString { it.hostAddress ?: "?" }?.ifBlank { "—" } ?: "—"}"
         lines += "DNS: ${info?.dnsServers?.joinToString { it.hostAddress ?: "?" }?.ifBlank { "—" } ?: "—"}"
@@ -531,13 +524,13 @@ class MainActivity : AppCompatActivity() {
         if (currentDevice(initial.id).macAddress != null) layout.addView(wolButton)
         val healthButton = controlRow("🧪 Проверить стабильность службы") { runHealthProbe(currentDevice(initial.id)) }
         layout.addView(healthButton)
-        val controlTestButton = controlRow("🧭 ОПРЕДЕЛИТЬ РЕАЛЬНЫЙ ПУЛЬТ") { detectAndOpenRemote(currentDevice(initial.id)) }
+        val controlTestButton = controlRow("🔌 ПОДКЛЮЧИТЬСЯ • АВТО / PAIRING") { showConnectionOptions(currentDevice(initial.id)) }
         layout.addView(controlTestButton)
 
         val d0 = currentDevice(initial.id)
         when {
             d0.verified -> layout.addView(controlRow("🎛 ОТКРЫТЬ ПУЛЬТ • API ✓") { showRemote(currentDevice(initial.id)) })
-            isRemoteCandidate(d0) -> layout.addView(controlRow("🧭 ПРОВЕРИТЬ И ОТКРЫТЬ ПУЛЬТ") { detectAndOpenRemote(currentDevice(initial.id)) })
+            isRemoteCandidate(d0) -> layout.addView(controlRow("🔌 ВАРИАНТЫ ПОДКЛЮЧЕНИЯ") { showConnectionOptions(currentDevice(initial.id)) })
             else -> layout.addView(controlRow("Как подключить управление") { showPairingInfo(d0) })
         }
         if (isAppleMobile(d0)) {
@@ -627,7 +620,6 @@ class MainActivity : AppCompatActivity() {
             }.show()
     }
 
-
     private fun enrichControlFromPorts(d: NearbyDevice): NearbyDevice {
         val ports = d.openPorts.map { it.port }.toSet()
         return when {
@@ -714,10 +706,51 @@ class MainActivity : AppCompatActivity() {
         detectAndOpenRemote(d)
     }
 
-    /**
-     * Targeted re-analysis + protocol verification. A TCP port alone never counts as successful control.
-     * The method uses only passive/status requests until the user explicitly opens a pairing flow.
-     */
+    private fun showConnectionOptions(d: NearbyDevice) {
+        val host = d.ipAddress ?: hostOf(d.address) ?: return showPairingInfo(d)
+        if (!isInCurrentWifiSubnet(host)) {
+            toast("Подключение разрешено только к private IPv4 текущей Wi‑Fi подсети")
+            return
+        }
+        val options = arrayOf(
+            "Авто — подключиться доступным штатным способом",
+            "Штатная авторизация — PIN / код / подтверждение",
+            "PJLink — пароль только на текущую команду"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Подключение • ${d.name}")
+            .setMessage(
+                "Без пароля UniversalRemote подключается только к тем локальным API, которые производитель сам оставил без авторизации. " +
+                    "Если устройство требует PIN, пароль, кнопку на корпусе или подтверждение на экране, используется только этот штатный способ. " +
+                    "Пароли и PIN блокировки не подбираются и не обходятся."
+            )
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> detectAndOpenRemote(d)
+                    1 -> openOfficialAuthFlow(d, host)
+                    2 -> pjlink.probe(host) { result -> runOnUiThread {
+                        if (result.ok) showPjLinkRemote(d, host) else toast("PJLink: ${result.message}")
+                    } }
+                }
+            }
+            .setNegativeButton("Закрыть", null)
+            .show()
+    }
+
+    private fun openOfficialAuthFlow(d: NearbyDevice, host: String) {
+        val ports = d.openPorts.map { it.port }.toSet()
+        val idText = listOf(d.name, d.kind, d.brand.orEmpty(), d.protocol, d.hardwareVendor.orEmpty()).joinToString(" ").lowercase()
+        when {
+            d.protocol.contains("UniversalRemote Companion", true) || CompanionController.DEFAULT_PORT in ports -> detectAndOpenRemote(d)
+            "android tv" in idText || "google tv" in idText || 6466 in ports || 6467 in ports -> showAndroidTvRemote(d, host)
+            "webos" in idText || ("lg" in idText && (3000 in ports || 3001 in ports)) -> showLgWebOsRemote(d, host)
+            "samsung" in idText || 8001 in ports || 8002 in ports -> showSamsungRemote(d, host)
+            "philips hue" in idText || "hue bridge" in idText -> showHueRemote(d, host)
+            d.protocol.contains("PJLink", true) || 4352 in ports -> showPjLinkRemote(d, host)
+            else -> detectAndOpenRemote(d)
+        }
+    }
+
     private fun detectAndOpenRemote(d: NearbyDevice) {
         val host = d.ipAddress ?: hostOf(d.address) ?: return showPairingInfo(d)
         val route = WifiNetworkResolver.bindProcessToWifi(this)
@@ -749,7 +782,6 @@ class MainActivity : AppCompatActivity() {
         val ports = d.openPorts.map { it.port }.toSet()
         val idText = listOf(d.name, d.kind, d.brand.orEmpty(), d.protocol, d.hardwareVendor.orEmpty()).joinToString(" ").lowercase()
 
-        // Pairing protocols are selected only from strong discovery evidence / their dedicated ports.
         if (d.protocol.contains("UniversalRemote Companion", true) || CompanionController.DEFAULT_PORT in ports) {
             val port = companionPort(d)
             return companion.probe(host, port) { result -> runOnUiThread {
@@ -858,36 +890,40 @@ class MainActivity : AppCompatActivity() {
             if (radioOnly) append("Эта запись пришла из Wi‑Fi эфира. Точка доступа может быть видна по радио, но это не означает, что телефон имеет доступ к её локальному API.\n\n")
             append("Поддерживаемый API управления не подтвердился. Приложение не будет отправлять команды наугад.\n\n")
             append(errors.take(6).joinToString("\n") { "• $it" })
-            append("\n\nЕсли это ваше устройство, проверьте: телефон и устройство в одной локальной сети; Guest/AP isolation выключен; на TV разрешено управление с мобильных приложений; для лампы включён LAN Control или выполнена штатная авторизация.")
+            append("\n\nЕсли это ваше устройство, можно открыть варианты штатного подключения: без авторизации, PIN/pairing или PJLink-пароль — в зависимости от протокола.")
         }
-        AlertDialog.Builder(this).setTitle("Управление не подтверждено • ${d.name}").setMessage(msg).setPositiveButton("Понятно", null).show()
+        AlertDialog.Builder(this)
+            .setTitle("Управление не подтверждено • ${d.name}")
+            .setMessage(msg)
+            .setNegativeButton("Закрыть", null)
+            .setPositiveButton("Варианты подключения") { _, _ -> showConnectionOptions(d) }
+            .show()
     }
 
     private fun showCompanionHelp() {
         AlertDialog.Builder(this)
-            .setTitle("Android Companion • v0.9.5")
-            .setMessage("Для управления вторым Android-телефоном установите на него companion-debug.apk из того же GitHub Actions artifact. На втором телефоне откройте Companion → Запустить Companion. Затем здесь запустите поиск, откройте карточку телефона и введите одноразовый 12-символьный код.\n\nГромкость и media работают после pairing. Home/Back/Recents требуют вручную включить Accessibility на управляемом телефоне. PIN/пароль блокировки не используется и не обходится.")
+            .setTitle("Android Companion • v${BuildConfig.VERSION_NAME}")
+            .setMessage("Для управления вторым Android-телефоном установите Companion той же версии. На втором телефоне откройте Companion → Запустить Companion. Затем здесь запустите поиск, откройте карточку телефона и введите одноразовый 12-символьный код.\n\nГромкость и media работают после pairing. Home/Back/Recents требуют вручную включить Accessibility на управляемом телефоне. PIN/пароль блокировки не используется и не обходится.")
             .setPositiveButton("Понятно", null)
             .show()
     }
 
     private fun showIosHelp(device: NearbyDevice? = null) {
         val detected = device?.let {
-            val type = listOf(it.name, it.kind, it.protocol, it.brand.orEmpty(), it.hostname.orEmpty()).joinToString(" ")
             "\n\nНайдено сейчас: ${it.name}\n${it.protocol}\n${it.ipAddress ?: hostOf(it.address) ?: "IPv4 не подтверждён"}"
         }.orEmpty()
         AlertDialog.Builder(this)
-            .setTitle("iPhone / iPad • Companion v0.9.2")
+            .setTitle("iPhone / iPad • Companion v${BuildConfig.VERSION_NAME}")
             .setMessage(
                 "БЕЗ ПРИЛОЖЕНИЯ НА iOS:\n" +
                     "• UniversalRemote ищет Apple Bonjour/Mobile Device признаки и показывает iPhone/iPad как отдельный класс устройств.\n" +
-                    "• Если iPad штатно enrolled в MDM, административные команды (например lock/app management) должны идти через ваш MDM-сервер; PIN экрана не является сетевым паролем.\n" +
+                    "• Если iPad штатно enrolled в MDM, административные команды должны идти через ваш MDM-сервер; PIN экрана не является сетевым паролем.\n" +
                     "• Обычная iPadOS не предоставляет стороннему Android-приложению API для Home/Back/касания по экрану.\n\n" +
                     "С IOS COMPANION:\n" +
-                    "• исходники ios-companion v0.9.2 входят в проект; pairing совместим с Companion v2, код живёт 5 минут, сессии можно отзывать;\n" +
-                    "• доступны Ping, Find/звуковой отклик и яркость экрана, когда Companion активен;\n" +
-                    "• iOS может приостанавливать локальный listener в фоне, поэтому Companion не обещает скрытое/постоянное управление.\n\n" +
-                    "Для установки iOS Companion на физический iPhone/iPad нужна подпись Apple Developer/вашего Team. GitHub CI делает compile-check, но не выдаёт фальшивый неподписанный IPA." + detected
+                    "• pairing совместим с Companion v2, код живёт ограниченное время, сессии можно отзывать;\n" +
+                    "• доступны функции, которые сама iOS разрешает Companion;\n" +
+                    "• iOS может приостанавливать локальный listener в фоне.\n\n" +
+                    "Для установки iOS Companion на физический iPhone/iPad нужна подпись Apple Developer/вашего Team." + detected
             )
             .setPositiveButton("Понятно", null)
             .show()
@@ -906,11 +942,11 @@ class MainActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_PHONE
         }
         AlertDialog.Builder(this)
-            .setTitle("Проверить управление по IP")
-            .setMessage("Введите IP вашего устройства в текущей локальной сети. Сначала выполняются безопасные status/probe-запросы; команды управления отправляются только после выбора найденного штатного протокола.")
+            .setTitle("Подключиться по IP")
+            .setMessage("Введите IP вашего устройства в текущей локальной сети. После безопасного определения протокола приложение предложит либо прямое подключение без пароля, либо штатный PIN/pairing/пароль, если устройство его требует.")
             .setView(input)
             .setNegativeButton("Отмена", null)
-            .setPositiveButton("Проверить") { _, _ ->
+            .setPositiveButton("Продолжить") { _, _ ->
                 val host = input.text.toString().trim()
                 if (!host.matches(Regex("(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}"))) {
                     toast("Введите корректный IPv4")
@@ -925,7 +961,7 @@ class MainActivity : AppCompatActivity() {
                         address = host,
                         ipAddress = host
                     )
-                    detectAndOpenRemote(d)
+                    showConnectionOptions(d)
                 }
             }.show()
     }
@@ -1139,7 +1175,6 @@ class MainActivity : AppCompatActivity() {
     private fun runRoku(d: NearbyDevice, host: String, key: String) {
         roku.key(host, key) { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
     }
-
 
     private fun confirmTlsFingerprint(title: String, host: String, fingerprint: String, approve: () -> Pair<Boolean, String>, after: () -> Unit) {
         val pretty = fingerprint.chunked(2).joinToString(":")
@@ -1526,7 +1561,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun addRemoteRow(layout: LinearLayout, vararg actions: Pair<String, () -> Unit>) {
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        actions.forEachIndexed { index, pair ->
+        actions.forEach { pair ->
             if (pair.first.isBlank()) {
                 row.addView(View(this), LinearLayout.LayoutParams(0, dp(48), 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) })
             } else {
@@ -1544,14 +1579,16 @@ class MainActivity : AppCompatActivity() {
     private fun showPairingInfo(d: NearbyDevice? = null) {
         val extra = when {
             d?.protocol?.contains("Matter", true) == true || d?.protocol?.contains("HomeKit", true) == true -> "\n\nMatter/HomeKit требуют штатного commissioning/pairing экосистемы; универсальный контроллер для них ещё не добавлен."
-            isAppleMobile(d ?: NearbyDevice("", "", "", "", "")) -> "\n\niPhone/iPad: без Companion доступны только штатно опубликованные Apple/Bonjour/MDM-функции. PIN/код блокировки не является сетевым паролем. Для Companion используйте добровольное pairing; iOS всё равно не разрешает системные Home/Back/касания стороннему приложению."
+            isAppleMobile(d ?: NearbyDevice("", "", "", "", "")) -> "\n\niPhone/iPad: без Companion доступны только штатно опубликованные Apple/Bonjour/MDM-функции. PIN/код блокировки не является сетевым паролем. Для Companion используйте добровольное pairing."
             d?.brand?.contains("Tuya", true) == true || d?.protocol?.contains("Tuya", true) == true -> "\n\nTuya/Smart Life требует локальный ключ или облачную авторизацию; обход авторизации не выполняется."
             d?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true -> "\n\nЭто объект Wi‑Fi эфира (SSID/BSSID). Видимый радиосигнал не означает, что к устройству можно отправлять LAN-команды."
             else -> ""
         }
         AlertDialog.Builder(this).setTitle("Нужна штатная авторизация")
-            .setMessage("Устройство найдено, но управление возможно только через поддерживаемый штатный протокол с PIN, подтверждением на экране или pairing-токеном. Защиту устройства приложение не обходит.$extra")
-            .setPositiveButton("Понятно", null).show()
+            .setMessage("Устройство найдено, но управление возможно только через поддерживаемый штатный протокол с PIN, подтверждением на экране, pairing-токеном или паролем конкретного API. Защиту устройства приложение не обходит.$extra")
+            .setNegativeButton("Закрыть", null)
+            .setPositiveButton("Варианты подключения") { _, _ -> d?.let(::showConnectionOptions) }
+            .show()
     }
 
     private fun showUpnpRemote(d: NearbyDevice) {
@@ -1582,7 +1619,7 @@ class MainActivity : AppCompatActivity() {
         layout.addView(controlRow("Громкость +") { sendPjLink(d, password, host) { pw, cb -> pjlink.volume(host, true, pw, cb) } })
         layout.addView(controlRow("Mute") { sendPjLink(d, password, host) { pw, cb -> pjlink.mute(host, true, pw, cb) } })
         layout.addView(controlRow("Unmute") { sendPjLink(d, password, host) { pw, cb -> pjlink.mute(host, false, pw, cb) } })
-        AlertDialog.Builder(this).setTitle("PJLink • $host").setMessage("Пароль используется только для текущей команды и не сохраняется на диск.")
+        AlertDialog.Builder(this).setTitle("PJLink • $host").setMessage("Если проектор не требует пароль — оставьте поле пустым. Если требует — пароль используется только для текущей команды и не сохраняется на диск.")
             .setView(layout).setNegativeButton("Закрыть", null).show()
     }
 
