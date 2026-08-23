@@ -51,10 +51,10 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
 
-      - name: Set up Gradle 8.10.2
+      - name: Set up Gradle 8.11.1
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
         with:
-          gradle-version: "8.10.2"
+          gradle-version: "8.11.1"
           cache-cleanup: always
 
       - name: Quality gates
