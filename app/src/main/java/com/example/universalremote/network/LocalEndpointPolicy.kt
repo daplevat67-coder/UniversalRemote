@@ -7,13 +7,23 @@ import java.net.URI
 
 /** Guards LAN endpoints so discovery and control cannot silently escape the selected local network. */
 object LocalEndpointPolicy {
+    @Volatile private var appContext: Context? = null
+
+    fun initialize(context: Context) {
+        appContext = context.applicationContext
+    }
+
     /**
-     * Security boundary for controller hosts: only literal RFC1918/link-local IPv4 is accepted.
-     * Hostnames are intentionally rejected so DNS cannot change the peer between validation and connect.
+     * Legacy call-site name kept for compatibility. The host must be a literal private IPv4 and,
+     * once the application is initialized, it must also belong to the current physical Wi-Fi/LAN prefix.
+     * Hostnames are intentionally rejected so DNS cannot change the peer after validation.
      */
     fun isPrivateIpv4(host: String): Boolean {
         val address = literalIpv4(host) ?: return false
-        return Ipv4Range.isPrivate(Ipv4Range.ipv4ToInt(address))
+        if (!Ipv4Range.isPrivate(Ipv4Range.ipv4ToInt(address))) return false
+        val context = appContext ?: return true
+        val lan = WifiNetworkResolver.lanInfo(context) ?: return false
+        return samePrefix(lan.ipv4.address, address.address, lan.prefixLength)
     }
 
     /** True only when [host] is a literal IPv4 peer inside the physical Wi-Fi/LAN prefix. */
@@ -28,8 +38,14 @@ object LocalEndpointPolicy {
         require(isInCurrentWifiSubnet(context, host)) { "Адрес вне текущей физической Wi-Fi/LAN подсети" }
     }
 
+    fun requireCurrentWifiSubnet(host: String) {
+        val context = appContext ?: error("LAN policy не инициализирован")
+        requireCurrentWifiSubnet(context, host)
+    }
+
     /** Physical Wi-Fi Network when Android exposes one; null on OEM fallback paths. */
     fun currentNetwork(context: Context): Network? = WifiNetworkResolver.lanInfo(context.applicationContext)?.network
+    fun currentNetwork(): Network? = appContext?.let { WifiNetworkResolver.lanInfo(it)?.network }
 
     /**
      * Discovery-controlled URLs must point to the exact literal source IPv4. Hostnames are rejected.
@@ -37,12 +53,13 @@ object LocalEndpointPolicy {
      */
     fun samePrivateHost(expectedHost: String, url: String, allowedSchemes: Set<String>): Boolean = runCatching {
         val expected = literalIpv4(expectedHost) ?: return@runCatching false
-        if (!Ipv4Range.isPrivate(Ipv4Range.ipv4ToInt(expected))) return@runCatching false
+        if (!isPrivateIpv4(expectedHost)) return@runCatching false
         val uri = URI(url)
         val scheme = uri.scheme?.lowercase() ?: return@runCatching false
         if (scheme !in allowedSchemes || uri.userInfo != null) return@runCatching false
-        val target = literalIpv4(uri.host ?: return@runCatching false) ?: return@runCatching false
-        target == expected
+        val targetHost = uri.host ?: return@runCatching false
+        val target = literalIpv4(targetHost) ?: return@runCatching false
+        target == expected && isPrivateIpv4(targetHost)
     }.getOrDefault(false)
 
     fun requireSamePrivateHost(expectedHost: String, url: String, allowedSchemes: Set<String>) {
