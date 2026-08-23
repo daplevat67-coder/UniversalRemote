@@ -3,6 +3,11 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val storeApplicationId = System.getenv("ANDROID_APPLICATION_ID")
+    ?.trim()
+    ?.takeIf { it.isNotBlank() }
+    ?: "com.example.universalremote"
+
 android {
     namespace = "com.example.universalremote"
     compileSdk = 36
@@ -10,7 +15,7 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { buildConfig = true }
     defaultConfig {
-        applicationId = "com.example.universalremote"
+        applicationId = storeApplicationId
         minSdk = 26
         targetSdk = 36
         versionCode = 20
