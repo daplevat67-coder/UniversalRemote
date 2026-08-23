@@ -1,6 +1,6 @@
 import XCTest
 import CryptoKit
-@testable import UniversalRemoteIOSCompanion
+@testable import UniversalRemote_iOS_Companion
 
 final class CompanionCryptoTests: XCTestCase {
     func testHmacIsDeterministicAndSensitiveToTranscript() {
