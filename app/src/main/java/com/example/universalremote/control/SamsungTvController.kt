@@ -22,8 +22,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 class SamsungTvController(context: Context) {
     data class Result(val ok: Boolean, val message: String)
 
+    private val app = context.applicationContext
     private val executor = Executors.newFixedThreadPool(3)
-    private val secrets = SecureStore(context, "samsung_tv_tokens")
+    private val secrets = SecureStore(app, "samsung_tv_tokens")
     private val tofu = TofuTls(secrets, "samsung")
     private val clients = ConcurrentHashMap<String, OkHttpClient>()
 
@@ -31,20 +32,22 @@ class SamsungTvController(context: Context) {
     fun isTlsTrusted(host: String): Boolean = tofu.isPinned(host)
     fun inspectTls(host: String, callback: (Result, String?) -> Unit) = executor.execute {
         val result = runCatching {
-            require(LocalEndpointPolicy.isPrivateIpv4(host)) { "Samsung: адрес вне private LAN" }
-            val fp = tofu.inspectFingerprint(host, 8002)
-            Result(true, "Samsung TLS fingerprint получен") to fp
+            LocalEndpointPolicy.requireCurrentWifiSubnet(app, host)
+            val fp = tofu.inspectFingerprint(LocalEndpointPolicy.currentNetwork(app), host, 8002)
+            Result(true, "Samsung TLS fingerprint получен через текущую LAN") to fp
         }.getOrElse { Result(false, "Samsung TLS: ${it.message ?: it.javaClass.simpleName}") to null }
         callback(result.first, result.second)
     }
     fun approveTls(host: String, fingerprint: String): Result = runCatching {
+        LocalEndpointPolicy.requireCurrentWifiSubnet(app, host)
         tofu.approve(host, fingerprint); Result(true, "Samsung TLS-сертификат закреплён")
     }.getOrElse { Result(false, "Samsung TLS: ${it.message}") }
 
     fun forget(host: String) {
         secrets.remove(tokenKey(host))
         tofu.forget(host)
-        clients.remove(host)?.closeResources()
+        val prefix = "$host@"
+        clients.keys.filter { it.startsWith(prefix) }.forEach { key -> clients.remove(key)?.closeResources() }
     }
 
     fun key(host: String, key: String, callback: (Result) -> Unit) {
@@ -54,13 +57,12 @@ class SamsungTvController(context: Context) {
     /** Passive API identification. HTTP:8001 is allowed here only because no credential is sent. */
     fun probe(host: String, callback: (Result) -> Unit) {
         executor.execute {
-            if (!LocalEndpointPolicy.isPrivateIpv4(host)) return@execute callback(Result(false, "Samsung: разрешены только private LAN IPv4"))
+            if (!LocalEndpointPolicy.isInCurrentWifiSubnet(app, host)) return@execute callback(Result(false, "Samsung: адрес вне текущей Wi-Fi/LAN подсети"))
             val urls = listOf("https://$host:8002/api/v2/", "http://$host:8001/api/v2/")
             var last = "Samsung Tizen API не найден"
             for (url in urls) {
                 val result = runCatching {
-                    val response = client(host).newCall(Request.Builder().url(url).build()).execute()
-                    response.use { r ->
+                    client(host).newCall(Request.Builder().url(url).build()).execute().use { r ->
                         val body = BoundedIo.readUtf8(r.body?.byteStream())
                         if (!r.isSuccessful) error("HTTP ${r.code}")
                         val json = JSONObject(body)
@@ -79,10 +81,9 @@ class SamsungTvController(context: Context) {
     }
 
     private fun connectAndSend(host: String, key: String, callback: (Result) -> Unit, allowTokenReset: Boolean) {
-        if (!LocalEndpointPolicy.isPrivateIpv4(host)) return callback(Result(false, "Samsung: адрес вне private LAN"))
+        if (!LocalEndpointPolicy.isInCurrentWifiSubnet(app, host)) return callback(Result(false, "Samsung: адрес вне текущей Wi-Fi/LAN подсети"))
         val name = Base64.encodeToString("Universal Remote".toByteArray(), Base64.NO_WRAP)
         if (!tofu.isPinned(host) && secrets.getString(tokenKey(host)) != null) {
-            // v0.7.0 tokens were stored without an authenticated certificate binding; force one safe re-pair.
             secrets.remove(tokenKey(host))
         }
         val token = secrets.getString(tokenKey(host))
@@ -90,9 +91,7 @@ class SamsungTvController(context: Context) {
         val finished = AtomicBoolean(false)
         var openedResponse: Response? = null
         client(host).newWebSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                openedResponse = response
-            }
+            override fun onOpen(webSocket: WebSocket, response: Response) { openedResponse = response }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 if (text.length > 256 * 1024) {
@@ -103,11 +102,8 @@ class SamsungTvController(context: Context) {
                 val json = runCatching { JSONObject(text) }.getOrNull() ?: return
                 when (json.optString("event")) {
                     "ms.channel.connect" -> {
-                        // Pin only after the Samsung application protocol itself confirmed the channel.
                         openedResponse?.let { tofu.pin(host, it) }
-                        json.optJSONObject("data")?.optString("token")?.takeIf { it.isNotBlank() }?.let {
-                            secrets.putString(tokenKey(host), it)
-                        }
+                        json.optJSONObject("data")?.optString("token")?.takeIf { it.isNotBlank() }?.let { secrets.putString(tokenKey(host), it) }
                         val payload = JSONObject()
                             .put("method", "ms.remote.control")
                             .put("params", JSONObject()
@@ -117,22 +113,16 @@ class SamsungTvController(context: Context) {
                                 .put("TypeOfRemote", "SendRemoteKey"))
                         val sent = webSocket.send(payload.toString())
                         webSocket.close(1000, "done")
-                        if (finished.compareAndSet(false, true)) {
-                            callback(Result(sent, if (sent) "Samsung: команда $key отправлена" else "Samsung: WebSocket не принял команду"))
-                        }
+                        if (finished.compareAndSet(false, true)) callback(Result(sent, if (sent) "Samsung: команда $key отправлена" else "Samsung: WebSocket не принял команду"))
                     }
-
                     "ms.channel.unauthorized" -> {
                         webSocket.close(1000, "unauthorized")
                         if (!finished.compareAndSet(false, true)) return
                         if (token != null && allowTokenReset) {
                             secrets.remove(tokenKey(host))
                             connectAndSend(host, key, callback, allowTokenReset = false)
-                        } else {
-                            callback(Result(false, "Samsung: на TV выберите «Разрешить» для Universal Remote."))
-                        }
+                        } else callback(Result(false, "Samsung: на TV выберите «Разрешить» для Universal Remote."))
                     }
-
                     "ms.error" -> {
                         webSocket.close(1000, "error")
                         if (finished.compareAndSet(false, true)) {
@@ -145,22 +135,27 @@ class SamsungTvController(context: Context) {
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (!finished.compareAndSet(false, true)) return
-                val legacy = "Автоматический fallback на ws://:8001 отключён, чтобы token не уходил открытым текстом."
-                callback(Result(false, "Samsung WSS: ${t.message ?: t.javaClass.simpleName}. $legacy"))
+                callback(Result(false, "Samsung WSS: ${t.message ?: t.javaClass.simpleName}. Автоматический fallback на ws://:8001 отключён."))
             }
         })
     }
 
-    private fun client(host: String): OkHttpClient = clients.getOrPut(host) {
-        val trust = tofu.trustManager(host)
-        val ssl = tofu.sslContext(host)
-        OkHttpClient.Builder()
-            .sslSocketFactory(ssl.socketFactory, trust)
-            // Samsung appliances often use self-signed certificates without an IP SAN; authenticity is TOFU-pinned above.
-            .hostnameVerifier { _, session -> tofu.verifyPinnedSession(host, session) }
-            .connectTimeout(2200, TimeUnit.MILLISECONDS)
-            .readTimeout(8, TimeUnit.SECONDS)
-            .build()
+    private fun client(host: String): OkHttpClient {
+        val network = LocalEndpointPolicy.currentNetwork(app)
+        val cacheKey = "$host@${network?.networkHandle ?: 0L}"
+        return clients.getOrPut(cacheKey) {
+            val trust = tofu.trustManager(host)
+            val ssl = tofu.sslContext(host)
+            OkHttpClient.Builder()
+                .apply { if (network != null) socketFactory(network.socketFactory) }
+                .sslSocketFactory(ssl.socketFactory, trust)
+                .hostnameVerifier { _, session -> tofu.verifyPinnedSession(host, session) }
+                .connectTimeout(2200, TimeUnit.MILLISECONDS)
+                .readTimeout(8, TimeUnit.SECONDS)
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .build()
+        }
     }
 
     private fun OkHttpClient.closeResources() {
