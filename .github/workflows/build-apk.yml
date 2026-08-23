@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Android Store Artifacts
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      VERSION: 0.9.6
+      VERSION: 0.9.7
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -36,6 +36,13 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Ensure Android API 36 SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --version
+          yes | sdkmanager "platforms;android-36" "build-tools;36.0.0" >/dev/null
+
       - name: Set up Gradle 8.10.2
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
         with:
@@ -45,40 +52,41 @@ jobs:
       - name: Quality gates
         run: gradle :app:lintDebug :companion:lintDebug :app:testDebugUnitTest :companion:testDebugUnitTest
 
-      - name: Build installable debug APKs
+      - name: Build verified debug APKs
         run: gradle :app:assembleDebug :companion:assembleDebug
 
-      - name: Prepare named debug APKs
+      - name: Prepare verified debug APKs
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist/android
+          mkdir -p dist/android-debug
           cp app/build/outputs/apk/debug/app-debug.apk \
-            "dist/android/UniversalRemote-v${VERSION}.apk"
+            "dist/android-debug/UniversalRemote-v${VERSION}.apk"
           cp companion/build/outputs/apk/debug/companion-debug.apk \
-            "dist/android/UniversalRemote-Companion-v${VERSION}.apk"
-          sha256sum dist/android/*.apk > dist/android/SHA256SUMS.txt
+            "dist/android-debug/UniversalRemote-Companion-v${VERSION}.apk"
+          sha256sum dist/android-debug/*.apk > dist/android-debug/SHA256SUMS.txt
 
       - name: Upload verified debug APKs
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: UniversalRemote-v0.9.6-APKs
+          name: UniversalRemote-v0.9.7-verified-debug-APKs
           if-no-files-found: error
           retention-days: 30
-          path: dist/android/
+          path: dist/android-debug/
 
-      - name: Check release signing configuration
+      - name: Check Android release signing configuration
         id: android_signing
         shell: bash
         run: |
           if [[ -n "$ANDROID_KEYSTORE_BASE64" && -n "$ANDROID_KEY_ALIAS" && -n "$ANDROID_KEYSTORE_PASSWORD" && -n "$ANDROID_KEY_PASSWORD" ]]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "Android release signing: configured" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "Android release signing secrets are incomplete; verified debug APKs remain available."
+            echo "Android release signing: NOT configured; signed APK/AAB skipped." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Prepare release signing key
+      - name: Prepare Android upload key
         if: steps.android_signing.outputs.ready == 'true'
         shell: bash
         run: |
@@ -87,11 +95,11 @@ jobs:
           chmod 600 "$RUNNER_TEMP/universalremote-release.jks"
           echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/universalremote-release.jks" >> "$GITHUB_ENV"
 
-      - name: Build signed release APKs
+      - name: Build signed release APK and AAB
         if: steps.android_signing.outputs.ready == 'true'
-        run: gradle :app:assembleRelease :companion:assembleRelease
+        run: gradle :app:assembleRelease :app:bundleRelease :companion:assembleRelease :companion:bundleRelease
 
-      - name: Prepare named signed release APKs
+      - name: Prepare Google Play and GitHub release artifacts
         if: steps.android_signing.outputs.ready == 'true'
         shell: bash
         run: |
@@ -99,21 +107,36 @@ jobs:
           mkdir -p dist/android-release
           cp app/build/outputs/apk/release/app-release.apk \
             "dist/android-release/UniversalRemote-v${VERSION}-release.apk"
+          cp app/build/outputs/bundle/release/app-release.aab \
+            "dist/android-release/UniversalRemote-v${VERSION}-release.aab"
           cp companion/build/outputs/apk/release/companion-release.apk \
             "dist/android-release/UniversalRemote-Companion-v${VERSION}-release.apk"
-          sha256sum dist/android-release/*.apk > dist/android-release/SHA256SUMS.txt
+          cp companion/build/outputs/bundle/release/companion-release.aab \
+            "dist/android-release/UniversalRemote-Companion-v${VERSION}-release.aab"
+          sha256sum dist/android-release/* > dist/android-release/SHA256SUMS.txt
+          echo "Google Play AAB: UniversalRemote-v${VERSION}-release.aab" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload signed release APKs
+      - name: Upload signed store artifacts
         if: steps.android_signing.outputs.ready == 'true'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: UniversalRemote-v0.9.6-signed-release-APKs
+          name: UniversalRemote-v0.9.7-signed-store-artifacts
           if-no-files-found: error
           retention-days: 30
           path: dist/android-release/
 
+      - name: Secret-file hygiene check
+        shell: bash
+        run: |
+          set -euo pipefail
+          forbidden=$(git ls-files | grep -Ei '\.(jks|keystore|p12|p8|mobileprovision)$|(^|/)\.env($|\.)' || true)
+          if [[ -n "$forbidden" ]]; then
+            echo "Tracked secret-like files detected:" >&2
+            echo "$forbidden" >&2
+            exit 1
+          fi
+
       - name: Cleanup Android signing material
         if: always()
         shell: bash
-        run: |
-          rm -f "$RUNNER_TEMP/universalremote-release.jks"
+        run: rm -f "$RUNNER_TEMP/universalremote-release.jks"
