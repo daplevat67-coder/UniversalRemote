@@ -5,15 +5,16 @@ plugins {
 
 android {
     namespace = "com.example.universalremote"
-    compileSdk = 35
+    compileSdk = 36
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
+    buildFeatures { buildConfig = true }
     defaultConfig {
         applicationId = "com.example.universalremote"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 19
-        versionName = "0.9.6"
+        targetSdk = 36
+        versionCode = 20
+        versionName = "0.9.7"
     }
 }
 
