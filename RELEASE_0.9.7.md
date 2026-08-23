@@ -11,6 +11,13 @@ v0.9.7 prepares UniversalRemote for Google Play and App Store testing without pr
 - Physical-LAN trust boundary tightened; discovery-controlled URLs must use the literal discovery-source IPv4.
 - Samsung, Hue and Google Cast credentialed/TLS connections are bound to the selected physical Android Network where available.
 - Signing files are ignored/checked and Companion crypto tests are included in CI.
+- Device cards now expose one unified connection flow: automatic use of vendor APIs that legitimately allow unauthenticated LAN control, official PIN/pairing/approval flows where authorization is required, and an ephemeral PJLink password path that never stores the password.
+- Manual-IP control uses the same connection flow and remains limited to the current private Wi-Fi subnet.
+- UI/diagnostics/help version labels now read from `BuildConfig.VERSION_NAME` instead of stale hard-coded release strings.
+
+## Connection model
+
+UniversalRemote does not treat "found on the network" as permission to control a device. The app may connect without a password only when the device's published local API permits it. When the protocol requires authentication, UniversalRemote uses the protocol's official mechanism, for example Android TV pairing code, Samsung/LG on-screen approval, Hue bridge button, UniversalRemote Companion code, or PJLink password. Screen-lock PINs, device passwords, and pairing protections are not bypassed or guessed.
 
 ## iOS / iPadOS
 
