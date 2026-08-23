@@ -22,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VERSION: 0.9.7
+      ANDROID_APPLICATION_ID: ${{ vars.ANDROID_APPLICATION_ID }}
+      ANDROID_COMPANION_APPLICATION_ID: ${{ vars.ANDROID_COMPANION_APPLICATION_ID }}
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -74,16 +76,23 @@ jobs:
           retention-days: 30
           path: dist/android-debug/
 
-      - name: Check Android release signing configuration
+      - name: Check store identity and Android release signing
         id: android_signing
         shell: bash
         run: |
-          if [[ -n "$ANDROID_KEYSTORE_BASE64" && -n "$ANDROID_KEY_ALIAS" && -n "$ANDROID_KEYSTORE_PASSWORD" && -n "$ANDROID_KEY_PASSWORD" ]]; then
+          set -euo pipefail
+          if [[ -z "$ANDROID_APPLICATION_ID" || -z "$ANDROID_COMPANION_APPLICATION_ID" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Store AAB skipped: set repository variables ANDROID_APPLICATION_ID and ANDROID_COMPANION_APPLICATION_ID before first Play listing." >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$ANDROID_APPLICATION_ID" == com.example.* || "$ANDROID_COMPANION_APPLICATION_ID" == com.example.* ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Store AAB skipped: com.example.* is a development placeholder; choose final package IDs first." >> "$GITHUB_STEP_SUMMARY"
+          elif [[ -n "$ANDROID_KEYSTORE_BASE64" && -n "$ANDROID_KEY_ALIAS" && -n "$ANDROID_KEYSTORE_PASSWORD" && -n "$ANDROID_KEY_PASSWORD" ]]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
-            echo "Android release signing: configured" >> "$GITHUB_STEP_SUMMARY"
+            echo "Android store identity/signing: configured" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "Android release signing: NOT configured; signed APK/AAB skipped." >> "$GITHUB_STEP_SUMMARY"
+            echo "Android store AAB skipped: release upload-key secrets are incomplete." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Prepare Android upload key
