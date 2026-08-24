@@ -25,45 +25,40 @@ jobs:
           from pathlib import Path
 
           path = Path("app/src/main/java/com/example/universalremote/MainActivity.kt")
-          s = path.read_text()
+          lines = path.read_text().splitlines()
 
-          old_header = '''        root.addView(text("UNIVERSAL REMOTE • v${BuildConfig.VERSION_NAME}", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
-          root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
-          root.addView(text("Автоподключение по штатным LAN API • без пароля там, где устройство это разрешает • PIN / pairing / пароль там, где они обязательны", 13f, c("#AABBD4"), false))
-          '''
+          def find_line(needle, start=0):
+              for i in range(start, len(lines)):
+                  if needle in lines[i]:
+                      return i
+              raise SystemExit(f"marker not found: {needle}")
 
-          new_header = '''        val header = LinearLayout(this).apply {
-              orientation = LinearLayout.HORIZONTAL
-              gravity = Gravity.CENTER_VERTICAL
-          }
-          val titleBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-          titleBox.addView(text("UNIVERSAL REMOTE • v${BuildConfig.VERSION_NAME}", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
-          titleBox.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
-          header.addView(titleBox, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-          header.addView(smallButton("⚙") { showSettingsHub() }, LinearLayout.LayoutParams(dp(52), dp(48)).apply { marginStart = dp(10) })
-          root.addView(header)
-          root.addView(text("Автоподключение по штатным LAN API • пароль/PIN используется только там, где протокол его реально поддерживает", 13f, c("#AABBD4"), false))
-          '''
+          # Header -> title + one gear button.
+          start = find_line('root.addView(text("UNIVERSAL REMOTE • v${BuildConfig.VERSION_NAME}"')
+          end = find_line('val radar = LinearLayout(this)', start)
+          header = [
+              '        val header = LinearLayout(this).apply {',
+              '            orientation = LinearLayout.HORIZONTAL',
+              '            gravity = Gravity.CENTER_VERTICAL',
+              '        }',
+              '        val titleBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }',
+              '        titleBox.addView(text("UNIVERSAL REMOTE • v${BuildConfig.VERSION_NAME}", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })',
+              '        titleBox.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })',
+              '        header.addView(titleBox, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))',
+              '        header.addView(smallButton("⚙") { showSettingsHub() }, LinearLayout.LayoutParams(dp(52), dp(48)).apply { marginStart = dp(10) })',
+              '        root.addView(header)',
+              '        root.addView(text("Автоподключение по штатным LAN API • пароль/PIN используется только там, где протокол его реально поддерживает", 13f, c("#AABBD4"), false))',
+              '',
+          ]
+          lines[start:end] = header
 
-          if old_header not in s:
-              raise SystemExit("header block not found")
-          s = s.replace(old_header, new_header, 1)
+          # Remove the row of separate settings/help buttons.
+          start = find_line('val tools = LinearLayout(this)')
+          end = find_line('search = EditText(this)', start)
+          lines[start:end] = []
 
-          old_tools = '''        val tools = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(9), 0, dp(8)) }
-          tools.addView(smallButton("ФИЛЬТРЫ") { showFilters() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(5) })
-          tools.addView(smallButton("НАСТРОЙКИ СКАНЕРА") { showSettings() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginStart = dp(5) })
-          root.addView(tools)
-          root.addView(smallButton("РУЧНОЙ IP / ПОДКЛЮЧЕНИЕ") { showManualControl() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
-          root.addView(smallButton("ДИАГНОСТИКА ПОИСКА") { showDiscoveryDiagnostics() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
-          root.addView(smallButton("📱 КАК УПРАВЛЯТЬ ANDROID-ТЕЛЕФОНОМ") { showCompanionHelp() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
-          root.addView(smallButton("🍎 IPHONE / IPAD • БЕЗ ПРИЛОЖЕНИЯ И С COMPANION") { showIosHelp() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(8)) })
-          '''
-          if old_tools not in s:
-              raise SystemExit("tools block not found")
-          s = s.replace(old_tools, '', 1)
-
-          marker = '''    private fun showFilters() {
-          '''
+          # Add a single settings hub before the existing filters function.
+          insert_at = find_line('private fun showFilters()')
           hub = '''    private fun showSettingsHub() {
               val items = arrayOf(
                   "🔎 Фильтры устройств",
@@ -105,49 +100,24 @@ jobs:
                   .setNegativeButton("Закрыть", null)
                   .show()
           }
+          '''.splitlines()
+          lines[insert_at:insert_at] = hub + ['']
 
-          '''
-          if marker not in s:
-              raise SystemExit("showFilters marker not found")
-          s = s.replace(marker, hub + marker, 1)
-
-          old_options = '''        val options = arrayOf(
-              "Авто — подключиться доступным штатным способом",
-              "Штатная авторизация — PIN / код / подтверждение",
-              "PJLink — пароль только на текущую команду"
+          text = '\n'.join(lines) + '\n'
+          text = text.replace('"Авто — подключиться доступным штатным способом"', '"⚡ Авто — без пароля, если API это разрешает"', 1)
+          text = text.replace('"Штатная авторизация — PIN / код / подтверждение"', '"🔐 Пароль / PIN / код / pairing — штатная авторизация"', 1)
+          text = text.replace('"PJLink — пароль только на текущую команду"', '"🎥 PJLink — пароль проектора"', 1)
+          text = text.replace(
+              '"Без пароля UniversalRemote подключается только к тем локальным API, которые производитель сам оставил без авторизации. " +\n                    "Если устройство требует PIN, пароль, кнопку на корпусе или подтверждение на экране, используется только этот штатный способ. " +\n                    "Пароли и PIN блокировки не подбираются и не обходятся."',
+              '"Если вы знаете пароль или код, UniversalRemote использует его только в штатном протоколе этого устройства. " +\n                    "Один пароль не является универсальным ключом: разные устройства используют разные API и способы pairing. " +\n                    "Подбор, обход PIN и отключение защиты не выполняются."',
+              1
           )
-          AlertDialog.Builder(this)
-              .setTitle("Подключение • ${d.name}")
-              .setMessage(
-                  "Без пароля UniversalRemote подключается только к тем локальным API, которые производитель сам оставил без авторизации. " +
-                      "Если устройство требует PIN, пароль, кнопку на корпусе или подтверждение на экране, используется только этот штатный способ. " +
-                      "Пароли и PIN блокировки не подбираются и не обходятся."
-              )
-          '''
-          new_options = '''        val options = arrayOf(
-              "⚡ Авто — без пароля, если API это разрешает",
-              "🔐 Пароль / PIN / код / pairing — штатная авторизация",
-              "🎥 PJLink — пароль проектора"
-          )
-          AlertDialog.Builder(this)
-              .setTitle("Подключение • ${d.name}")
-              .setMessage(
-                  "Если вы знаете пароль или код, UniversalRemote использует его только в штатном протоколе этого устройства. " +
-                      "Один пароль не является универсальным ключом: разные устройства используют разные API и способы pairing. " +
-                      "Подбор, обход PIN и отключение защиты не выполняются."
-              )
-          '''
-          if old_options not in s:
-              raise SystemExit("connection options block not found")
-          s = s.replace(old_options, new_options, 1)
-
-          s = s.replace(
+          text = text.replace(
               '.setPositiveButton("Варианты подключения") { _, _ -> d?.let(::showConnectionOptions) }',
               '.setPositiveButton("Подключение / пароль") { _, _ -> d?.let(::showConnectionOptions) }',
               1
           )
-
-          path.write_text(s)
+          path.write_text(text)
           PY
 
       - name: Commit patch and remove temporary workflow
