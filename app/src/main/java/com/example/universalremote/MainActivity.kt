@@ -147,9 +147,17 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(26), dp(18), dp(14))
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c("#07111F"), c("#101B35"), c("#132842")))
         }
-        root.addView(text("UNIVERSAL REMOTE • v${BuildConfig.VERSION_NAME}", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
-        root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
-        root.addView(text("Автоподключение по штатным LAN API • без пароля там, где устройство это разрешает • PIN / pairing / пароль там, где они обязательны", 13f, c("#AABBD4"), false))
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val titleBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        titleBox.addView(text("UNIVERSAL REMOTE • v${BuildConfig.VERSION_NAME}", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+        titleBox.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
+        header.addView(titleBox, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(smallButton("⚙") { showSettingsHub() }, LinearLayout.LayoutParams(dp(52), dp(48)).apply { marginStart = dp(10) })
+        root.addView(header)
+        root.addView(text("Автоподключение по штатным LAN API • пароль/PIN используется только там, где протокол его реально поддерживает", 13f, c("#AABBD4"), false))
 
         val radar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -173,15 +181,6 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { requestAndScan() }
         }
         root.addView(scanButton, LinearLayout.LayoutParams(-1, dp(54)))
-
-        val tools = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(9), 0, dp(8)) }
-        tools.addView(smallButton("ФИЛЬТРЫ") { showFilters() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(5) })
-        tools.addView(smallButton("НАСТРОЙКИ СКАНЕРА") { showSettings() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginStart = dp(5) })
-        root.addView(tools)
-        root.addView(smallButton("РУЧНОЙ IP / ПОДКЛЮЧЕНИЕ") { showManualControl() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
-        root.addView(smallButton("ДИАГНОСТИКА ПОИСКА") { showDiscoveryDiagnostics() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
-        root.addView(smallButton("📱 КАК УПРАВЛЯТЬ ANDROID-ТЕЛЕФОНОМ") { showCompanionHelp() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
-        root.addView(smallButton("🍎 IPHONE / IPAD • БЕЗ ПРИЛОЖЕНИЯ И С COMPANION") { showIosHelp() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(8)) })
 
         search = EditText(this).apply {
             hint = "Поиск: имя, IP, MAC, порт, бренд…"
@@ -371,6 +370,48 @@ class MainActivity : AppCompatActivity() {
             adapter.submitList(filtered)
         }, 140L)
     }
+
+    private fun showSettingsHub() {
+    val items = arrayOf(
+        "🔎 Фильтры устройств",
+        "📡 Настройки сканера",
+        "🔌 Подключение по IP / пароль / pairing",
+        "🧪 Диагностика поиска",
+        "📱 Android Companion",
+        "🍎 iPhone / iPad",
+        "♻ Сбросить поиск и источники"
+    )
+    AlertDialog.Builder(this)
+        .setTitle("⚙ Настройки")
+        .setItems(items) { _, which ->
+            when (which) {
+                0 -> showFilters()
+                1 -> showSettings()
+                2 -> showManualControl()
+                3 -> showDiscoveryDiagnostics()
+                4 -> showCompanionHelp()
+                5 -> showIosHelp()
+                6 -> {
+                    prefs.edit()
+                        .putString("ip_range", "auto")
+                        .putInt("connect_timeout", 300)
+                        .putInt("parallelism", 32)
+                        .putBoolean("ble", true)
+                        .putBoolean("classic", true)
+                        .putBoolean("wifi_radio", true)
+                        .putBoolean("mdns", true)
+                        .putBoolean("ssdp", true)
+                        .putBoolean("lan", true)
+                        .putBoolean("pjlink", true)
+                        .putBoolean("yeelight", true)
+                        .apply()
+                    requestAndScan()
+                }
+            }
+        }
+        .setNegativeButton("Закрыть", null)
+        .show()
+}
 
     private fun showFilters() {
         val labels = arrayOf("Телевизоры", "Колонки / аудио", "Свет", "Компьютеры", "Проекторы", "Телефоны", "Принтеры", "Другие")
@@ -713,16 +754,16 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val options = arrayOf(
-            "Авто — подключиться доступным штатным способом",
-            "Штатная авторизация — PIN / код / подтверждение",
-            "PJLink — пароль только на текущую команду"
+            "⚡ Авто — без пароля, если API это разрешает",
+            "🔐 Пароль / PIN / код / pairing — штатная авторизация",
+            "🎥 PJLink — пароль проектора"
         )
         AlertDialog.Builder(this)
             .setTitle("Подключение • ${d.name}")
             .setMessage(
-                "Без пароля UniversalRemote подключается только к тем локальным API, которые производитель сам оставил без авторизации. " +
-                    "Если устройство требует PIN, пароль, кнопку на корпусе или подтверждение на экране, используется только этот штатный способ. " +
-                    "Пароли и PIN блокировки не подбираются и не обходятся."
+                "Если вы знаете пароль или код, UniversalRemote использует его только в штатном протоколе этого устройства. " +
+                    "Один пароль не является универсальным ключом: разные устройства используют разные API и способы pairing. " +
+                    "Подбор, обход PIN и отключение защиты не выполняются."
             )
             .setItems(options) { _, which ->
                 when (which) {
@@ -1587,7 +1628,7 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle("Нужна штатная авторизация")
             .setMessage("Устройство найдено, но управление возможно только через поддерживаемый штатный протокол с PIN, подтверждением на экране, pairing-токеном или паролем конкретного API. Защиту устройства приложение не обходит.$extra")
             .setNegativeButton("Закрыть", null)
-            .setPositiveButton("Варианты подключения") { _, _ -> d?.let(::showConnectionOptions) }
+            .setPositiveButton("Подключение / пароль") { _, _ -> d?.let(::showConnectionOptions) }
             .show()
     }
 
