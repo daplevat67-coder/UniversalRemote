@@ -1,0 +1,162 @@
+name: Apply settings gear update
+
+on:
+  push:
+    branches: [ ui/settings-gear-auth-hub ]
+    paths:
+      - ".github/workflows/apply-settings-gear-update.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ui/settings-gear-auth-hub
+
+      - name: Consolidate settings and auth UI
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("app/src/main/java/com/example/universalremote/MainActivity.kt")
+          s = path.read_text()
+
+          old_header = '''        root.addView(text("UNIVERSAL REMOTE • v${BuildConfig.VERSION_NAME}", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+          root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
+          root.addView(text("Автоподключение по штатным LAN API • без пароля там, где устройство это разрешает • PIN / pairing / пароль там, где они обязательны", 13f, c("#AABBD4"), false))
+          '''
+
+          new_header = '''        val header = LinearLayout(this).apply {
+              orientation = LinearLayout.HORIZONTAL
+              gravity = Gravity.CENTER_VERTICAL
+          }
+          val titleBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+          titleBox.addView(text("UNIVERSAL REMOTE • v${BuildConfig.VERSION_NAME}", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+          titleBox.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
+          header.addView(titleBox, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+          header.addView(smallButton("⚙") { showSettingsHub() }, LinearLayout.LayoutParams(dp(52), dp(48)).apply { marginStart = dp(10) })
+          root.addView(header)
+          root.addView(text("Автоподключение по штатным LAN API • пароль/PIN используется только там, где протокол его реально поддерживает", 13f, c("#AABBD4"), false))
+          '''
+
+          if old_header not in s:
+              raise SystemExit("header block not found")
+          s = s.replace(old_header, new_header, 1)
+
+          old_tools = '''        val tools = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(9), 0, dp(8)) }
+          tools.addView(smallButton("ФИЛЬТРЫ") { showFilters() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(5) })
+          tools.addView(smallButton("НАСТРОЙКИ СКАНЕРА") { showSettings() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginStart = dp(5) })
+          root.addView(tools)
+          root.addView(smallButton("РУЧНОЙ IP / ПОДКЛЮЧЕНИЕ") { showManualControl() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
+          root.addView(smallButton("ДИАГНОСТИКА ПОИСКА") { showDiscoveryDiagnostics() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
+          root.addView(smallButton("📱 КАК УПРАВЛЯТЬ ANDROID-ТЕЛЕФОНОМ") { showCompanionHelp() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
+          root.addView(smallButton("🍎 IPHONE / IPAD • БЕЗ ПРИЛОЖЕНИЯ И С COMPANION") { showIosHelp() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(8)) })
+          '''
+          if old_tools not in s:
+              raise SystemExit("tools block not found")
+          s = s.replace(old_tools, '', 1)
+
+          marker = '''    private fun showFilters() {
+          '''
+          hub = '''    private fun showSettingsHub() {
+              val items = arrayOf(
+                  "🔎 Фильтры устройств",
+                  "📡 Настройки сканера",
+                  "🔌 Подключение по IP / пароль / pairing",
+                  "🧪 Диагностика поиска",
+                  "📱 Android Companion",
+                  "🍎 iPhone / iPad",
+                  "♻ Сбросить поиск и источники"
+              )
+              AlertDialog.Builder(this)
+                  .setTitle("⚙ Настройки")
+                  .setItems(items) { _, which ->
+                      when (which) {
+                          0 -> showFilters()
+                          1 -> showSettings()
+                          2 -> showManualControl()
+                          3 -> showDiscoveryDiagnostics()
+                          4 -> showCompanionHelp()
+                          5 -> showIosHelp()
+                          6 -> {
+                              prefs.edit()
+                                  .putString("ip_range", "auto")
+                                  .putInt("connect_timeout", 300)
+                                  .putInt("parallelism", 32)
+                                  .putBoolean("ble", true)
+                                  .putBoolean("classic", true)
+                                  .putBoolean("wifi_radio", true)
+                                  .putBoolean("mdns", true)
+                                  .putBoolean("ssdp", true)
+                                  .putBoolean("lan", true)
+                                  .putBoolean("pjlink", true)
+                                  .putBoolean("yeelight", true)
+                                  .apply()
+                              requestAndScan()
+                          }
+                      }
+                  }
+                  .setNegativeButton("Закрыть", null)
+                  .show()
+          }
+
+          '''
+          if marker not in s:
+              raise SystemExit("showFilters marker not found")
+          s = s.replace(marker, hub + marker, 1)
+
+          old_options = '''        val options = arrayOf(
+              "Авто — подключиться доступным штатным способом",
+              "Штатная авторизация — PIN / код / подтверждение",
+              "PJLink — пароль только на текущую команду"
+          )
+          AlertDialog.Builder(this)
+              .setTitle("Подключение • ${d.name}")
+              .setMessage(
+                  "Без пароля UniversalRemote подключается только к тем локальным API, которые производитель сам оставил без авторизации. " +
+                      "Если устройство требует PIN, пароль, кнопку на корпусе или подтверждение на экране, используется только этот штатный способ. " +
+                      "Пароли и PIN блокировки не подбираются и не обходятся."
+              )
+          '''
+          new_options = '''        val options = arrayOf(
+              "⚡ Авто — без пароля, если API это разрешает",
+              "🔐 Пароль / PIN / код / pairing — штатная авторизация",
+              "🎥 PJLink — пароль проектора"
+          )
+          AlertDialog.Builder(this)
+              .setTitle("Подключение • ${d.name}")
+              .setMessage(
+                  "Если вы знаете пароль или код, UniversalRemote использует его только в штатном протоколе этого устройства. " +
+                      "Один пароль не является универсальным ключом: разные устройства используют разные API и способы pairing. " +
+                      "Подбор, обход PIN и отключение защиты не выполняются."
+              )
+          '''
+          if old_options not in s:
+              raise SystemExit("connection options block not found")
+          s = s.replace(old_options, new_options, 1)
+
+          s = s.replace(
+              '.setPositiveButton("Варианты подключения") { _, _ -> d?.let(::showConnectionOptions) }',
+              '.setPositiveButton("Подключение / пароль") { _, _ -> d?.let(::showConnectionOptions) }',
+              1
+          )
+
+          path.write_text(s)
+          PY
+
+      - name: Commit patch and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/apply-settings-gear-update.yml
+          git config user.name "UniversalRemote CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add app/src/main/java/com/example/universalremote/MainActivity.kt .github/workflows/apply-settings-gear-update.yml
+          git commit -m "Consolidate settings into gear and credential hub"
+          git push origin HEAD:ui/settings-gear-auth-hub
