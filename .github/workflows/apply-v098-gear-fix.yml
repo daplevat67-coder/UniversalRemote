@@ -18,15 +18,13 @@ jobs:
         with:
           ref: fix/v0.9.8-visible-gear
 
-      - name: Patch UI and version
+      - name: Patch visible gear and Wi-Fi credential flow
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
-
           p = Path('app/src/main/java/com/example/universalremote/MainActivity.kt')
           s = p.read_text()
-
           if 'import android.content.Intent\n' not in s:
               s = s.replace('import android.content.pm.PackageManager\n', 'import android.content.Intent\nimport android.content.pm.PackageManager\n', 1)
           if 'import android.provider.Settings\n' not in s:
@@ -34,24 +32,21 @@ jobs:
 
           old = 'header.addView(smallButton("⚙") { showSettingsHub() }, LinearLayout.LayoutParams(dp(52), dp(48)).apply { marginStart = dp(10) })'
           new = 'header.addView(gearButton { showSettingsHub() }, LinearLayout.LayoutParams(dp(56), dp(52)).apply { marginStart = dp(10) })'
-          if old not in s:
-              raise SystemExit('gear header marker not found')
+          if old not in s: raise SystemExit('gear marker not found')
           s = s.replace(old, new, 1)
 
           old_radio = 'd?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true -> "\\n\\nЭто объект Wi‑Fi эфира (SSID/BSSID). Видимый радиосигнал не означает, что к устройству можно отправлять LAN-команды."'
           new_radio = 'd?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true -> "\\n\\nЭто объект Wi‑Fi эфира (SSID/BSSID). Если вы знаете пароль этой Wi‑Fi сети, сначала подключите Android к ней через системные настройки, затем вернитесь в UniversalRemote и повторите поиск. Пароль Wi‑Fi даёт доступ к сети, но не является универсальным паролем управления устройством."'
-          if old_radio not in s:
-              raise SystemExit('radio help marker not found')
+          if old_radio not in s: raise SystemExit('radio marker not found')
           s = s.replace(old_radio, new_radio, 1)
 
           pairing_marker = '        AlertDialog.Builder(this).setTitle("Нужна штатная авторизация")\n'
-          pairing_prefix = '''        val radioOnly = d?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true
+          prefix = '''        val radioOnly = d?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true
           val hasHost = d?.ipAddress != null || d?.let { hostOf(it.address) } != null
           val positiveLabel = if (radioOnly && !hasHost) "Открыть Wi‑Fi" else "Подключение / пароль"
           '''
-          if pairing_marker not in s:
-              raise SystemExit('pairing builder marker not found')
-          s = s.replace(pairing_marker, pairing_prefix + pairing_marker, 1)
+          if pairing_marker not in s: raise SystemExit('pairing marker not found')
+          s = s.replace(pairing_marker, prefix + pairing_marker, 1)
 
           old_positive = '            .setPositiveButton("Подключение / пароль") { _, _ -> d?.let(::showConnectionOptions) }'
           new_positive = '''            .setPositiveButton(positiveLabel) { _, _ ->
@@ -64,12 +59,11 @@ jobs:
                       }
                   }
               }'''
-          if old_positive not in s:
-              raise SystemExit('pairing positive button marker not found')
+          if old_positive not in s: raise SystemExit('positive marker not found')
           s = s.replace(old_positive, new_positive, 1)
 
-          helper_marker = '    private fun smallButton(label: String, action: () -> Unit) = Button(this).apply {'
-          gear_helper = '''    private fun gearButton(action: () -> Unit) = TextView(this).apply {
+          helper = '    private fun smallButton(label: String, action: () -> Unit) = Button(this).apply {'
+          gear = '''    private fun gearButton(action: () -> Unit) = TextView(this).apply {
               text = "⚙"
               textSize = 28f
               gravity = Gravity.CENTER
@@ -82,27 +76,9 @@ jobs:
           }
 
           '''
-          if helper_marker not in s:
-              raise SystemExit('smallButton marker not found')
-          s = s.replace(helper_marker, gear_helper + helper_marker, 1)
+          if helper not in s: raise SystemExit('helper marker not found')
+          s = s.replace(helper, gear + helper, 1)
           p.write_text(s)
-
-          for f in [Path('app/build.gradle.kts'), Path('companion/build.gradle.kts')]:
-              t = f.read_text().replace('versionCode = 20', 'versionCode = 21').replace('versionName = "0.9.7"', 'versionName = "0.9.8"')
-              f.write_text(t)
-
-          wf = Path('.github/workflows/build-apk.yml')
-          t = wf.read_text().replace('VERSION: 0.9.7', 'VERSION: 0.9.8').replace('UniversalRemote-v0.9.7-verified-debug-APKs', 'UniversalRemote-v0.9.8-verified-debug-APKs').replace('UniversalRemote-v0.9.7-signed-store-artifacts', 'UniversalRemote-v0.9.8-signed-store-artifacts')
-          wf.write_text(t)
-
-          iy = Path('ios-companion/project.yml')
-          if iy.exists():
-              t = iy.read_text().replace('CURRENT_PROJECT_VERSION: 20', 'CURRENT_PROJECT_VERSION: 21').replace('MARKETING_VERSION: 0.9.7', 'MARKETING_VERSION: 0.9.8')
-              iy.write_text(t)
-          iw = Path('.github/workflows/build-ios-companion.yml')
-          if iw.exists():
-              t = iw.read_text().replace('VERSION: 0.9.7', 'VERSION: 0.9.8').replace('v0.9.7', 'v0.9.8')
-              iw.write_text(t)
           PY
 
       - name: Commit patch and remove temporary workflow
@@ -112,6 +88,6 @@ jobs:
           rm -f .github/workflows/apply-v098-gear-fix.yml
           git config user.name "UniversalRemote CI"
           git config user.email "actions@users.noreply.github.com"
-          git add app companion ios-companion .github/workflows/build-apk.yml .github/workflows/build-ios-companion.yml .github/workflows/apply-v098-gear-fix.yml
+          git add app/src/main/java/com/example/universalremote/MainActivity.kt .github/workflows/apply-v098-gear-fix.yml
           git commit -m "Fix visible settings gear and Wi-Fi password flow"
           git push origin HEAD:fix/v0.9.8-visible-gear
