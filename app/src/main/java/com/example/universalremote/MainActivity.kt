@@ -1,6 +1,7 @@
 package com.example.universalremote
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
@@ -12,6 +13,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -155,7 +157,7 @@ class MainActivity : AppCompatActivity() {
         titleBox.addView(text("UNIVERSAL REMOTE • v${BuildConfig.VERSION_NAME}", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
         titleBox.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
         header.addView(titleBox, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        header.addView(smallButton("⚙") { showSettingsHub() }, LinearLayout.LayoutParams(dp(52), dp(48)).apply { marginStart = dp(10) })
+        header.addView(gearButton { showSettingsHub() }, LinearLayout.LayoutParams(dp(56), dp(52)).apply { marginStart = dp(10) })
         root.addView(header)
         root.addView(text("Автоподключение по штатным LAN API • пароль/PIN используется только там, где протокол его реально поддерживает", 13f, c("#AABBD4"), false))
 
@@ -1622,13 +1624,25 @@ class MainActivity : AppCompatActivity() {
             d?.protocol?.contains("Matter", true) == true || d?.protocol?.contains("HomeKit", true) == true -> "\n\nMatter/HomeKit требуют штатного commissioning/pairing экосистемы; универсальный контроллер для них ещё не добавлен."
             isAppleMobile(d ?: NearbyDevice("", "", "", "", "")) -> "\n\niPhone/iPad: без Companion доступны только штатно опубликованные Apple/Bonjour/MDM-функции. PIN/код блокировки не является сетевым паролем. Для Companion используйте добровольное pairing."
             d?.brand?.contains("Tuya", true) == true || d?.protocol?.contains("Tuya", true) == true -> "\n\nTuya/Smart Life требует локальный ключ или облачную авторизацию; обход авторизации не выполняется."
-            d?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true -> "\n\nЭто объект Wi‑Fi эфира (SSID/BSSID). Видимый радиосигнал не означает, что к устройству можно отправлять LAN-команды."
+            d?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true -> "\n\nЭто объект Wi‑Fi эфира (SSID/BSSID). Если вы знаете пароль этой Wi‑Fi сети, сначала подключите Android к ней через системные настройки, затем вернитесь в UniversalRemote и повторите поиск. Пароль Wi‑Fi даёт доступ к сети, но не является универсальным паролем управления устройством."
             else -> ""
         }
+        val radioOnly = d?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true
+val hasHost = d?.ipAddress != null || d?.let { hostOf(it.address) } != null
+val positiveLabel = if (radioOnly && !hasHost) "Открыть Wi‑Fi" else "Подключение / пароль"
         AlertDialog.Builder(this).setTitle("Нужна штатная авторизация")
             .setMessage("Устройство найдено, но управление возможно только через поддерживаемый штатный протокол с PIN, подтверждением на экране, pairing-токеном или паролем конкретного API. Защиту устройства приложение не обходит.$extra")
             .setNegativeButton("Закрыть", null)
-            .setPositiveButton("Подключение / пароль") { _, _ -> d?.let(::showConnectionOptions) }
+            .setPositiveButton(positiveLabel) { _, _ ->
+        d?.let { device ->
+            if (radioOnly && !hasHost) {
+                runCatching { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+                    .onFailure { toast("Не удалось открыть настройки Wi‑Fi") }
+            } else {
+                showConnectionOptions(device)
+            }
+        }
+    }
             .show()
     }
 
@@ -1742,6 +1756,18 @@ class MainActivity : AppCompatActivity() {
         text = label; isAllCaps = false; textSize = 15f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
         background = rounded(c("#5A1F2B"), 12, c("#B54A5D")); setOnClickListener { action() }
     }
+    private fun gearButton(action: () -> Unit) = TextView(this).apply {
+    text = "⚙"
+    textSize = 28f
+    gravity = Gravity.CENTER
+    setTextColor(Color.WHITE)
+    contentDescription = "Настройки"
+    isClickable = true
+    isFocusable = true
+    background = rounded(c("#172946"), 14, c("#65E6C4"))
+    setOnClickListener { action() }
+}
+
     private fun smallButton(label: String, action: () -> Unit) = Button(this).apply {
         text = label; textSize = 12f; setTextColor(Color.WHITE); isAllCaps = false
         typeface = Typeface.DEFAULT_BOLD; background = rounded(c("#172946"), 14, c("#294466")); setOnClickListener { action() }
