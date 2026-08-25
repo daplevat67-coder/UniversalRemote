@@ -26,8 +26,11 @@ jobs:
 
           p = Path('app/src/main/java/com/example/universalremote/MainActivity.kt')
           s = p.read_text()
-          s = s.replace('import android.content.pm.PackageManager\n', 'import android.content.Intent\nimport android.content.pm.PackageManager\n', 1)
-          s = s.replace('import android.os.Looper\n', 'import android.os.Looper\nimport android.provider.Settings\n', 1)
+
+          if 'import android.content.Intent\n' not in s:
+              s = s.replace('import android.content.pm.PackageManager\n', 'import android.content.Intent\nimport android.content.pm.PackageManager\n', 1)
+          if 'import android.provider.Settings\n' not in s:
+              s = s.replace('import android.os.Looper\n', 'import android.os.Looper\nimport android.provider.Settings\n', 1)
 
           old = 'header.addView(smallButton("⚙") { showSettingsHub() }, LinearLayout.LayoutParams(dp(52), dp(48)).apply { marginStart = dp(10) })'
           new = 'header.addView(gearButton { showSettingsHub() }, LinearLayout.LayoutParams(dp(56), dp(52)).apply { marginStart = dp(10) })'
@@ -41,29 +44,29 @@ jobs:
               raise SystemExit('radio help marker not found')
           s = s.replace(old_radio, new_radio, 1)
 
-          old_dialog = '''        AlertDialog.Builder(this).setTitle("Нужна штатная авторизация")
-              .setMessage("Устройство найдено, но управление возможно только через поддерживаемый штатный протокол с PIN, подтверждением на экране, pairing-токеном или паролем конкретного API. Защиту устройства приложение не обходит.$extra")
-              .setNegativeButton("Закрыть", null)
-              .setPositiveButton("Подключение / пароль") { _, _ -> d?.let(::showConnectionOptions) }
-              .show()
+          pairing_marker = '        AlertDialog.Builder(this).setTitle("Нужна штатная авторизация")\n'
+          pairing_prefix = '''        val radioOnly = d?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true
+          val hasHost = d?.ipAddress != null || d?.let { hostOf(it.address) } != null
+          val positiveLabel = if (radioOnly && !hasHost) "Открыть Wi‑Fi" else "Подключение / пароль"
           '''
-          new_dialog = '''        val radioOnly = d?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true
-          val builder = AlertDialog.Builder(this).setTitle("Нужна штатная авторизация")
-              .setMessage("Устройство найдено, но управление возможно только через поддерживаемый штатный протокол с PIN, подтверждением на экране, pairing-токеном или паролем конкретного API. Защиту устройства приложение не обходит.$extra")
-              .setNegativeButton("Закрыть", null)
-          if (radioOnly && (d?.ipAddress == null && d?.let { hostOf(it.address) } == null)) {
-              builder.setPositiveButton("Открыть Wi‑Fi") { _, _ ->
-                  runCatching { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
-                      .onFailure { toast("Не удалось открыть настройки Wi‑Fi") }
-              }
-          } else {
-              builder.setPositiveButton("Подключение / пароль") { _, _ -> d?.let(::showConnectionOptions) }
-          }
-          builder.show()
-          '''
-          if old_dialog not in s:
-              raise SystemExit('pairing dialog marker not found')
-          s = s.replace(old_dialog, new_dialog, 1)
+          if pairing_marker not in s:
+              raise SystemExit('pairing builder marker not found')
+          s = s.replace(pairing_marker, pairing_prefix + pairing_marker, 1)
+
+          old_positive = '            .setPositiveButton("Подключение / пароль") { _, _ -> d?.let(::showConnectionOptions) }'
+          new_positive = '''            .setPositiveButton(positiveLabel) { _, _ ->
+                  d?.let { device ->
+                      if (radioOnly && !hasHost) {
+                          runCatching { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+                              .onFailure { toast("Не удалось открыть настройки Wi‑Fi") }
+                      } else {
+                          showConnectionOptions(device)
+                      }
+                  }
+              }'''
+          if old_positive not in s:
+              raise SystemExit('pairing positive button marker not found')
+          s = s.replace(old_positive, new_positive, 1)
 
           helper_marker = '    private fun smallButton(label: String, action: () -> Unit) = Button(this).apply {'
           gear_helper = '''    private fun gearButton(action: () -> Unit) = TextView(this).apply {
