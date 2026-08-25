@@ -25,58 +25,50 @@ jobs:
           from pathlib import Path
 
           p = Path('app/src/main/java/com/example/universalremote/MainActivity.kt')
-          s = p.read_text()
+          lines = p.read_text().splitlines()
 
-          if 'import com.example.universalremote.control.BleGattController\n' not in s:
-              s = s.replace(
-                  'import com.example.universalremote.control.AndroidTvController\n',
-                  'import com.example.universalremote.control.AndroidTvController\nimport com.example.universalremote.control.BleGattController\n',
-                  1
-              )
+          def find(needle, start=0):
+              for i in range(start, len(lines)):
+                  if needle in lines[i]:
+                      return i
+              raise SystemExit(f'marker not found: {needle}')
 
-          if 'private lateinit var bleGatt: BleGattController' not in s:
-              s = s.replace(
-                  '    private lateinit var androidTv: AndroidTvController\n',
-                  '    private lateinit var androidTv: AndroidTvController\n    private lateinit var bleGatt: BleGattController\n',
-                  1
-              )
+          # Imports / field / initialization.
+          i = find('import com.example.universalremote.control.AndroidTvController')
+          if not any('BleGattController' in line for line in lines[:80]):
+              lines.insert(i + 1, 'import com.example.universalremote.control.BleGattController')
 
-          if 'bleGatt = BleGattController(this)' not in s:
-              s = s.replace(
-                  '        androidTv = AndroidTvController(this)\n',
-                  '        androidTv = AndroidTvController(this)\n        bleGatt = BleGattController(this)\n',
-                  1
-              )
+          i = find('private lateinit var androidTv: AndroidTvController')
+          if not any('private lateinit var bleGatt: BleGattController' in line for line in lines):
+              lines.insert(i + 1, '    private lateinit var bleGatt: BleGattController')
 
-          old = '''        val healthButton = controlRow("🧪 Проверить стабильность службы") { runHealthProbe(currentDevice(initial.id)) }
-          layout.addView(healthButton)
-          val controlTestButton = controlRow("🔌 ПОДКЛЮЧИТЬСЯ • АВТО / PAIRING") { showConnectionOptions(currentDevice(initial.id)) }
-          layout.addView(controlTestButton)
-          '''
-          new = '''        val healthButton = controlRow("🧪 Проверить стабильность службы") { runHealthProbe(currentDevice(initial.id)) }
-          layout.addView(healthButton)
-          val bleCandidate = isBleDevice(currentDevice(initial.id))
-          val controlTestButton = controlRow(if (bleCandidate) "🟦 BLE GATT / СОПРЯЖЕНИЕ" else "🔌 ПОДКЛЮЧИТЬСЯ • АВТО / PAIRING") {
-              val current = currentDevice(initial.id)
-              if (isBleDevice(current)) showBleGattPanel(current) else showConnectionOptions(current)
-          }
-          layout.addView(controlTestButton)
-          '''
-          if old not in s:
-              raise SystemExit('showDevice control marker not found')
-          s = s.replace(old, new, 1)
+          i = find('androidTv = AndroidTvController(this)')
+          if not any('bleGatt = BleGattController(this)' in line for line in lines):
+              lines.insert(i + 1, '        bleGatt = BleGattController(this)')
 
-          old_enable = '            controlTestButton.isEnabled = hostOf(d0.address) != null || d0.ipAddress != null\n'
-          new_enable = '            controlTestButton.isEnabled = isBleDevice(d0) || hostOf(d0.address) != null || d0.ipAddress != null\n'
-          if old_enable not in s:
-              raise SystemExit('control enable marker not found')
-          s = s.replace(old_enable, new_enable, 1)
+          # Device detail control button: BLE devices must be usable without an IPv4 address.
+          start = find('val healthButton = controlRow("🧪 Проверить стабильность службы")')
+          control = find('val controlTestButton = controlRow("🔌 ПОДКЛЮЧИТЬСЯ • АВТО / PAIRING")', start)
+          end = control + 2
+          replacement = [
+              lines[start],
+              lines[start + 1],
+              '        val bleCandidate = isBleDevice(currentDevice(initial.id))',
+              '        val controlTestButton = controlRow(if (bleCandidate) "🟦 BLE GATT / СОПРЯЖЕНИЕ" else "🔌 ПОДКЛЮЧИТЬСЯ • АВТО / PAIRING") {',
+              '            val current = currentDevice(initial.id)',
+              '            if (isBleDevice(current)) showBleGattPanel(current) else showConnectionOptions(current)',
+              '        }',
+              '        layout.addView(controlTestButton)'
+          ]
+          lines[start:end] = replacement
 
-          marker = '    private fun currentDevice(id: String): NearbyDevice = devices[id] ?: NearbyDevice(id, "Устройство", "Неизвестно", "", "")\n\n'
-          if marker not in s:
-              raise SystemExit('currentDevice marker not found')
+          i = find('controlTestButton.isEnabled = hostOf(d0.address) != null || d0.ipAddress != null')
+          lines[i] = '            controlTestButton.isEnabled = isBleDevice(d0) || hostOf(d0.address) != null || d0.ipAddress != null'
 
-          ble_ui = r'''    private fun isBleDevice(d: NearbyDevice): Boolean =
+          # BLE UI helpers.
+          insert_at = find('private fun analyzeDevice(device: NearbyDevice')
+          if not any('private fun showBleGattPanel' in line for line in lines):
+              helper = r'''    private fun isBleDevice(d: NearbyDevice): Boolean =
           d.id.startsWith("ble:", true) || d.protocol.contains("Bluetooth LE", true)
 
           private fun bleAddress(d: NearbyDevice): String? {
@@ -106,9 +98,7 @@ jobs:
                           status.text = formatBleGattInspection(result)
                           val current = devices[d.id]
                           if (current != null) {
-                              devices[d.id] = current.copy(
-                                  analysisNote = if (result.ok) result.message else "${current.analysisNote ?: ""} • ${result.message}".trim(' ', '•')
-                              )
+                              devices[d.id] = current.copy(analysisNote = result.message)
                               scheduleRender()
                           }
                       }
@@ -119,10 +109,10 @@ jobs:
                   bleGatt.requestBond(address) { ok, message ->
                       runOnUiThread {
                           toast(message)
-                          if (ok) {
-                              status.text = "✓ $message\n\nТеперь нажмите «Подключиться и прочитать GATT» ещё раз: после bonding могут открыться защищённые сервисы."
-                          } else if (!message.contains("отправлен", true)) {
-                              status.text = "Pairing: $message"
+                          status.text = if (ok) {
+                              "✓ $message\n\nТеперь нажмите «Подключиться и прочитать GATT» ещё раз: после bonding могут открыться защищённые сервисы."
+                          } else {
+                              "Pairing: $message"
                           }
                       }
                   }
@@ -166,27 +156,19 @@ jobs:
               }
           }.trim()
 
-          '''
-          s = s.replace(marker, marker + ble_ui, 1)
+          '''.splitlines()
+              lines[insert_at:insert_at] = helper
 
-          old_connection = '''    private fun showConnectionOptions(d: NearbyDevice) {
-          val host = d.ipAddress ?: hostOf(d.address) ?: return showPairingInfo(d)
-          '''
-          new_connection = '''    private fun showConnectionOptions(d: NearbyDevice) {
-          if (isBleDevice(d)) return showBleGattPanel(d)
-          val host = d.ipAddress ?: hostOf(d.address) ?: return showPairingInfo(d)
-          '''
-          if old_connection not in s:
-              raise SystemExit('showConnectionOptions marker not found')
-          s = s.replace(old_connection, new_connection, 1)
+          # Route BLE credential/control flow to GATT instead of requiring IPv4.
+          i = find('private fun showConnectionOptions(d: NearbyDevice)')
+          if 'isBleDevice(d)' not in lines[i + 1]:
+              lines.insert(i + 1, '        if (isBleDevice(d)) return showBleGattPanel(d)')
 
-          old_destroy = '        stopScan(); upnp.close(); pjlink.close(); roku.close(); samsung.close(); wled.close(); cast.close(); yeelight.close(); lgWebOs.close(); hue.close(); androidTv.close(); analyzer.close(); wol.close(); healthProbe.close()\n'
-          new_destroy = '        stopScan(); upnp.close(); pjlink.close(); roku.close(); samsung.close(); wled.close(); cast.close(); yeelight.close(); lgWebOs.close(); hue.close(); androidTv.close(); bleGatt.close(); analyzer.close(); wol.close(); healthProbe.close()\n'
-          if old_destroy not in s:
-              raise SystemExit('onDestroy marker not found')
-          s = s.replace(old_destroy, new_destroy, 1)
+          # Close GATT connections with the activity.
+          i = find('stopScan(); upnp.close(); pjlink.close(); roku.close(); samsung.close(); wled.close(); cast.close(); yeelight.close(); lgWebOs.close(); hue.close(); androidTv.close(); analyzer.close(); wol.close(); healthProbe.close()')
+          lines[i] = lines[i].replace('androidTv.close(); analyzer.close()', 'androidTv.close(); bleGatt.close(); analyzer.close()')
 
-          p.write_text(s)
+          p.write_text('\n'.join(lines) + '\n')
           PY
 
       - name: Commit source integration
