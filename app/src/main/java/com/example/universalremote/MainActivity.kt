@@ -33,6 +33,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.example.universalremote.control.AndroidTvController
+import com.example.universalremote.control.BleGattController
 import com.example.universalremote.control.CastV2Controller
 import com.example.universalremote.control.CompanionController
 import com.example.universalremote.control.HueController
@@ -90,6 +91,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var lgWebOs: LgWebOsController
     private lateinit var hue: HueController
     private lateinit var androidTv: AndroidTvController
+    private lateinit var bleGatt: BleGattController
     private lateinit var analyzer: DeviceAnalyzer
     private val wol = WakeOnLanController()
     private lateinit var healthProbe: ServiceHealthProbe
@@ -124,6 +126,7 @@ class MainActivity : AppCompatActivity() {
         supportActionBar?.hide()
         ensureDiscoverySourcesEnabled()
         androidTv = AndroidTvController(this)
+        bleGatt = BleGattController(this)
         samsung = SamsungTvController(this)
         lgWebOs = LgWebOsController(this)
         hue = HueController(this)
@@ -567,7 +570,11 @@ class MainActivity : AppCompatActivity() {
         if (currentDevice(initial.id).macAddress != null) layout.addView(wolButton)
         val healthButton = controlRow("🧪 Проверить стабильность службы") { runHealthProbe(currentDevice(initial.id)) }
         layout.addView(healthButton)
-        val controlTestButton = controlRow("🔌 ПОДКЛЮЧИТЬСЯ • АВТО / PAIRING") { showConnectionOptions(currentDevice(initial.id)) }
+        val bleCandidate = isBleDevice(currentDevice(initial.id))
+        val controlTestButton = controlRow(if (bleCandidate) "🟦 BLE GATT / СОПРЯЖЕНИЕ" else "🔌 ПОДКЛЮЧИТЬСЯ • АВТО / PAIRING") {
+            val current = currentDevice(initial.id)
+            if (isBleDevice(current)) showBleGattPanel(current) else showConnectionOptions(current)
+        }
         layout.addView(controlTestButton)
 
         val d0 = currentDevice(initial.id)
@@ -587,12 +594,100 @@ class MainActivity : AppCompatActivity() {
             else analyzeButton.isEnabled = false
             wolButton.isEnabled = d0.macAddress != null && (hostOf(d0.address) != null || d0.ipAddress != null)
             healthButton.isEnabled = hostOf(d0.address) != null || d0.ipAddress != null
-            controlTestButton.isEnabled = hostOf(d0.address) != null || d0.ipAddress != null
+            controlTestButton.isEnabled = isBleDevice(d0) || hostOf(d0.address) != null || d0.ipAddress != null
         }
         dialog.show()
     }
 
     private fun currentDevice(id: String): NearbyDevice = devices[id] ?: NearbyDevice(id, "Устройство", "Неизвестно", "", "")
+
+    private fun isBleDevice(d: NearbyDevice): Boolean =
+d.id.startsWith("ble:", true) || d.protocol.contains("Bluetooth LE", true)
+
+private fun bleAddress(d: NearbyDevice): String? {
+    val mac = Regex("(?i)^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
+    return listOf(d.macAddress, d.address, d.id.removePrefix("ble:"))
+        .firstOrNull { value -> value != null && mac.matches(value) }
+}
+
+private fun showBleGattPanel(d: NearbyDevice) {
+    val address = bleAddress(d) ?: return toast("BLE MAC не определён")
+    val scroll = ScrollView(this)
+    val layout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(18), dp(8), dp(18), dp(8))
+    }
+    val status = text(
+        "BLE: $address\n\nGATT ещё не проверен. Сначала прочитайте сервисы. Если характеристика требует шифрование, используйте штатное Android Bluetooth pairing.",
+        13f,
+        Color.WHITE,
+        false
+    ).apply { setTextIsSelectable(true) }
+    layout.addView(status)
+    layout.addView(controlRow("🔎 ПОДКЛЮЧИТЬСЯ И ПРОЧИТАТЬ GATT") {
+        status.text = "⏳ Подключение к $address и discoverServices()…"
+        bleGatt.inspect(address) { result ->
+            runOnUiThread {
+                status.text = formatBleGattInspection(result)
+                val current = devices[d.id]
+                if (current != null) {
+                    devices[d.id] = current.copy(analysisNote = result.message)
+                    scheduleRender()
+                }
+            }
+        }
+    })
+    layout.addView(controlRow("🔐 ШТАТНОЕ BLUETOOTH-СОПРЯЖЕНИЕ") {
+        status.text = "⏳ Android запускает штатное Bluetooth pairing. Подтвердите PIN/код на системном экране и на устройстве, если он появится."
+        bleGatt.requestBond(address) { ok, message ->
+            runOnUiThread {
+                toast(message)
+                status.text = if (ok) {
+                    "✓ $message\n\nТеперь нажмите «Подключиться и прочитать GATT» ещё раз: после bonding могут открыться защищённые сервисы."
+                } else {
+                    "Pairing: $message"
+                }
+            }
+        }
+    })
+    layout.addView(text(
+        "UniversalRemote не пишет случайные байты в неизвестные vendor-характеристики. Для реального пульта нужен известный формат команд конкретного BLE-протокола. Стандартные и vendor UUID теперь определяются автоматически, а pairing выполняет Android.",
+        12f,
+        c("#AABBD4"),
+        false
+    ).apply { setPadding(0, dp(10), 0, 0) })
+    scroll.addView(layout)
+    AlertDialog.Builder(this)
+        .setTitle("BLE GATT • ${d.name}")
+        .setView(scroll)
+        .setNegativeButton("Закрыть", null)
+        .show()
+}
+
+private fun formatBleGattInspection(result: BleGattController.InspectionResult): String = buildString {
+    appendLine(if (result.ok) "✓ ${result.message}" else "✗ ${result.message}")
+    appendLine("Адрес: ${result.address}")
+    appendLine("Имя: ${result.deviceName ?: "—"}")
+    appendLine("Pairing/bond: ${result.bondState}")
+    if (!result.ok) return@buildString
+    appendLine()
+    appendLine("GATT-сервисы:")
+    result.services.take(32).forEach { service ->
+        appendLine()
+        appendLine("${if (service.primary) "PRIMARY" else "SECONDARY"} • ${service.name}")
+        appendLine(service.uuid)
+        service.characteristics.take(32).forEach { ch ->
+            append("  ↳ ${ch.name} • ${ch.properties.ifEmpty { listOf("без известных свойств") }.joinToString("/")}")
+            appendLine("\n     ${ch.uuid}")
+        }
+    }
+    if (result.services.size > 32) appendLine("\n… ещё ${result.services.size - 32} сервис(ов)")
+    val knownControl = result.services.filter { it.name in setOf("Immediate Alert", "Human Interface Device", "Media Control", "Generic Media Control") }
+    if (knownControl.isNotEmpty()) {
+        appendLine()
+        appendLine("Известные стандартные профили: ${knownControl.joinToString { it.name }}")
+    }
+}.trim()
 
     private fun analyzeDevice(device: NearbyDevice, details: TextView) {
         val host = device.ipAddress ?: hostOf(device.address)
@@ -750,6 +845,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showConnectionOptions(d: NearbyDevice) {
+        if (isBleDevice(d)) return showBleGattPanel(d)
         val host = d.ipAddress ?: hostOf(d.address) ?: return showPairingInfo(d)
         if (!isInCurrentWifiSubnet(host)) {
             toast("Подключение разрешено только к private IPv4 текущей Wi‑Fi подсети")
@@ -1789,7 +1885,7 @@ val positiveLabel = if (radioOnly && !hasHost) "Открыть Wi‑Fi" else "П
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        stopScan(); upnp.close(); pjlink.close(); roku.close(); samsung.close(); wled.close(); cast.close(); yeelight.close(); lgWebOs.close(); hue.close(); androidTv.close(); analyzer.close(); wol.close(); healthProbe.close()
+        stopScan(); upnp.close(); pjlink.close(); roku.close(); samsung.close(); wled.close(); cast.close(); yeelight.close(); lgWebOs.close(); hue.close(); androidTv.close(); bleGatt.close(); analyzer.close(); wol.close(); healthProbe.close()
         WifiNetworkResolver.unbindProcess(this)
         super.onDestroy()
     }
