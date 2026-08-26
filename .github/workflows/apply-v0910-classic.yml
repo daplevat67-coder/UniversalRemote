@@ -1,0 +1,214 @@
+name: Apply v0.9.10 Bluetooth Classic fix
+
+on:
+  push:
+    branches: [ fix/v0.9.10-bluetooth-classic ]
+    paths:
+      - ".github/workflows/apply-v0910-classic.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: fix/v0.9.10-bluetooth-classic
+
+      - name: Patch Bluetooth Classic flow
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('app/src/main/java/com/example/universalremote/MainActivity.kt')
+          s = p.read_text()
+
+          old = '''        val bleCandidate = isBleDevice(currentDevice(initial.id))
+          val controlTestButton = controlRow(if (bleCandidate) "🟦 BLE GATT / СОПРЯЖЕНИЕ" else "🔌 ПОДКЛЮЧИТЬСЯ • АВТО / PAIRING") {
+              val current = currentDevice(initial.id)
+              if (isBleDevice(current)) showBleGattPanel(current) else showConnectionOptions(current)
+          }
+          layout.addView(controlTestButton)
+          '''
+          new = '''        val currentBluetooth = currentDevice(initial.id)
+          val bleCandidate = isBleDevice(currentBluetooth)
+          val classicCandidate = isClassicBluetoothDevice(currentBluetooth)
+          val connectLabel = when {
+              bleCandidate -> "🟦 BLE GATT / СОПРЯЖЕНИЕ"
+              classicCandidate -> "🔵 BLUETOOTH / СОПРЯЖЕНИЕ"
+              else -> "🔌 ПОДКЛЮЧИТЬСЯ • АВТО / PAIRING"
+          }
+          val controlTestButton = controlRow(connectLabel) {
+              val current = currentDevice(initial.id)
+              when {
+                  isBleDevice(current) -> showBleGattPanel(current)
+                  isClassicBluetoothDevice(current) -> showClassicBluetoothPanel(current)
+                  else -> showConnectionOptions(current)
+              }
+          }
+          layout.addView(controlTestButton)
+          '''
+          if old not in s:
+              raise SystemExit('BLE control block not found')
+          s = s.replace(old, new, 1)
+
+          old = '            controlTestButton.isEnabled = isBleDevice(d0) || hostOf(d0.address) != null || d0.ipAddress != null\n'
+          new = '            controlTestButton.isEnabled = isBleDevice(d0) || isClassicBluetoothDevice(d0) || hostOf(d0.address) != null || d0.ipAddress != null\n'
+          if old not in s:
+              raise SystemExit('control enabled marker not found')
+          s = s.replace(old, new, 1)
+
+          marker = '''    private fun isBleDevice(d: NearbyDevice): Boolean =
+d.id.startsWith("ble:", true) || d.protocol.contains("Bluetooth LE", true)
+
+'''
+          if marker not in s:
+              raise SystemExit('isBleDevice marker not found')
+          addition = '''    private fun isClassicBluetoothDevice(d: NearbyDevice): Boolean =
+        d.id.startsWith("bt:", true) || d.protocol.contains("Bluetooth Classic", true)
+
+'''
+          s = s.replace(marker, marker + addition, 1)
+
+          marker = '''private fun showBleGattPanel(d: NearbyDevice) {
+'''
+          if marker not in s:
+              raise SystemExit('showBleGattPanel marker not found')
+          classic = r'''private fun showClassicBluetoothPanel(d: NearbyDevice) {
+    val address = bleAddress(d) ?: return toast("Bluetooth MAC не определён")
+    val scroll = ScrollView(this)
+    val layout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(18), dp(8), dp(18), dp(8))
+    }
+    val status = text(
+        "Bluetooth Classic: $address\n\nДля колонок, наушников, клавиатур и других Classic-устройств пароль/PIN обрабатывает штатный Android Bluetooth pairing. После сопряжения профиль A2DP/HFP/HID подключает сама система, если устройство его поддерживает.",
+        13f,
+        Color.WHITE,
+        false
+    ).apply { setTextIsSelectable(true) }
+    layout.addView(status)
+    layout.addView(controlRow("🔐 СОПРЯЧЬ ЧЕРЕЗ ANDROID") {
+        status.text = "⏳ Запускаю штатное Bluetooth-сопряжение для $address…"
+        bleGatt.requestBond(address) { ok, message ->
+            runOnUiThread {
+                status.text = if (ok) "✓ $message" else message
+                toast(message)
+            }
+        }
+    })
+    layout.addView(controlRow("🟦 ПРОВЕРИТЬ BLE GATT / DUAL-MODE") {
+        status.text = "⏳ Проверяю, доступен ли этому адресу BLE GATT…"
+        bleGatt.inspect(address) { result ->
+            runOnUiThread {
+                status.text = formatBleGattInspection(result)
+            }
+        }
+    })
+    layout.addView(controlRow("⚙ ОТКРЫТЬ НАСТРОЙКИ BLUETOOTH") {
+        runCatching { startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
+            .onFailure { toast("Не удалось открыть настройки Bluetooth") }
+    })
+    layout.addView(text(
+        "Важно: Bluetooth Classic не имеет одного универсального протокола управления. Для JBL/наушников Android после pairing обычно сам подключает аудиопрофиль. BLE GATT проверяется отдельно только если устройство dual-mode или публикует LE-интерфейс.",
+        12f,
+        c("#AABBD4"),
+        false
+    ).apply { setPadding(0, dp(10), 0, 0) })
+    scroll.addView(layout)
+    AlertDialog.Builder(this)
+        .setTitle("Bluetooth • ${d.name}")
+        .setView(scroll)
+        .setNegativeButton("Закрыть", null)
+        .show()
+}
+
+'''
+          s = s.replace(marker, classic + marker, 1)
+
+          old = '''    private fun showConnectionOptions(d: NearbyDevice) {
+        if (isBleDevice(d)) return showBleGattPanel(d)
+        val host = d.ipAddress ?: hostOf(d.address) ?: return showPairingInfo(d)
+'''
+          new = '''    private fun showConnectionOptions(d: NearbyDevice) {
+        if (isBleDevice(d)) return showBleGattPanel(d)
+        if (isClassicBluetoothDevice(d)) return showClassicBluetoothPanel(d)
+        val host = d.ipAddress ?: hostOf(d.address) ?: return showPairingInfo(d)
+'''
+          if old not in s:
+              raise SystemExit('showConnectionOptions marker not found')
+          s = s.replace(old, new, 1)
+
+          old = '''            d?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true -> "\\n\\nЭто объект Wi‑Fi эфира (SSID/BSSID). Если вы знаете пароль этой Wi‑Fi сети, сначала подключите Android к ней через системные настройки, затем вернитесь в UniversalRemote и повторите поиск. Пароль Wi‑Fi даёт доступ к сети, но не является универсальным паролем управления устройством."
+            else -> ""
+        }
+        val radioOnly = d?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true
+val hasHost = d?.ipAddress != null || d?.let { hostOf(it.address) } != null
+val positiveLabel = if (radioOnly && !hasHost) "Открыть Wi‑Fi" else "Подключение / пароль"
+'''
+          new = '''            d?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true -> "\\n\\nЭто объект Wi‑Fi эфира (SSID/BSSID). Если вы знаете пароль этой Wi‑Fi сети, сначала подключите Android к ней через системные настройки, затем вернитесь в UniversalRemote и повторите поиск. Пароль Wi‑Fi даёт доступ к сети, но не является универсальным паролем управления устройством."
+            d?.let { isBleDevice(it) || isClassicBluetoothDevice(it) } == true -> "\\n\\nЭто Bluetooth-устройство. Для него не нужен IPv4: UniversalRemote должен запускать штатное Android pairing или BLE GATT, а не возвращать вас в это же окно."
+            else -> ""
+        }
+        val radioOnly = d?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true
+        val bluetoothOnly = d?.let { isBleDevice(it) || isClassicBluetoothDevice(it) } == true
+        val hasHost = d?.ipAddress != null || d?.let { hostOf(it.address) } != null
+        val positiveLabel = when {
+            radioOnly && !hasHost -> "Открыть Wi‑Fi"
+            bluetoothOnly && !hasHost -> "Bluetooth pairing"
+            else -> "Подключение / пароль"
+        }
+'''
+          if old not in s:
+              raise SystemExit('pairing info classification marker not found')
+          s = s.replace(old, new, 1)
+
+          old = '''            if (radioOnly && !hasHost) {
+                runCatching { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+                    .onFailure { toast("Не удалось открыть настройки Wi‑Fi") }
+            } else {
+                showConnectionOptions(device)
+            }
+'''
+          new = '''            when {
+                radioOnly && !hasHost -> runCatching { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+                    .onFailure { toast("Не удалось открыть настройки Wi‑Fi") }
+                isBleDevice(device) -> showBleGattPanel(device)
+                isClassicBluetoothDevice(device) -> showClassicBluetoothPanel(device)
+                else -> showConnectionOptions(device)
+            }
+'''
+          if old not in s:
+              raise SystemExit('pairing positive action marker not found')
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+
+          for path in [Path('app/build.gradle.kts'), Path('companion/build.gradle.kts')]:
+              text = path.read_text()
+              text = text.replace('versionCode = 22', 'versionCode = 23')
+              text = text.replace('versionName = "0.9.9"', 'versionName = "0.9.10"')
+              path.write_text(text)
+
+          wf = Path('.github/workflows/build-apk.yml')
+          text = wf.read_text()
+          text = text.replace('VERSION: 0.9.9', 'VERSION: 0.9.10')
+          text = text.replace('UniversalRemote-v0.9.9-verified-debug-APKs', 'UniversalRemote-v0.9.10-verified-debug-APKs')
+          text = text.replace('UniversalRemote-v0.9.9-signed-store-artifacts', 'UniversalRemote-v0.9.10-signed-store-artifacts')
+          wf.write_text(text)
+          PY
+
+      - name: Commit fix and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/apply-v0910-classic.yml
+          git config user.name "UniversalRemote CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add app/src/main/java/com/example/universalremote/MainActivity.kt app/build.gradle.kts companion/build.gradle.kts .github/workflows/build-apk.yml .github/workflows/apply-v0910-classic.yml
+          git commit -m "Fix Bluetooth Classic pairing flow in v0.9.10"
+          git push origin HEAD:fix/v0.9.10-bluetooth-classic
