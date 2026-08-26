@@ -18,8 +18,8 @@ android {
         applicationId = storeApplicationId
         minSdk = 26
         targetSdk = 36
-        versionCode = 22
-        versionName = "0.9.9"
+        versionCode = 23
+        versionName = "0.9.10"
     }
 }
 
