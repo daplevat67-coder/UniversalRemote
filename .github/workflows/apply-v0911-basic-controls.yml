@@ -1,0 +1,169 @@
+name: Apply v0.9.11 basic controls
+
+on:
+  push:
+    branches: [ fix/v0.9.11-basic-controls ]
+    paths:
+      - ".github/workflows/apply-v0911-basic-controls.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: fix/v0.9.11-basic-controls
+
+      - name: Patch basic control flow
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("app/src/main/java/com/example/universalremote/MainActivity.kt")
+          s = p.read_text()
+
+          old = '''        val connectLabel = when {
+              bleCandidate -> "🟦 BLE GATT / СОПРЯЖЕНИЕ"
+              classicCandidate -> "🔵 BLUETOOTH / СОПРЯЖЕНИЕ"
+              else -> "🔌 ПОДКЛЮЧИТЬСЯ • АВТО / PAIRING"
+          }
+          val controlTestButton = controlRow(connectLabel) {
+              val current = currentDevice(initial.id)
+              when {
+                  isBleDevice(current) -> showBleGattPanel(current)
+                  isClassicBluetoothDevice(current) -> showClassicBluetoothPanel(current)
+                  else -> showConnectionOptions(current)
+              }
+          }'''
+          new = '''        val connectLabel = when {
+              bleCandidate -> "🟦 BLE GATT / СОПРЯЖЕНИЕ"
+              classicCandidate -> "🔵 BLUETOOTH / СОПРЯЖЕНИЕ"
+              else -> "⚡ БАЗОВОЕ УПРАВЛЕНИЕ / АВТО"
+          }
+          val controlTestButton = controlRow(connectLabel) {
+              val current = currentDevice(initial.id)
+              openBasicControl(current)
+          }'''
+          if old not in s:
+              raise SystemExit("connect block not found")
+          s = s.replace(old, new, 1)
+
+          old = '''            wolButton.isEnabled = d0.macAddress != null && (hostOf(d0.address) != null || d0.ipAddress != null)'''
+          new = '''            wolButton.isEnabled = d0.macAddress != null'''
+          if old not in s:
+              raise SystemExit("WOL enable block not found")
+          s = s.replace(old, new, 1)
+
+          marker = '''    private fun showConnectionOptions(d: NearbyDevice) {
+          if (isBleDevice(d)) return showBleGattPanel(d)
+          if (isClassicBluetoothDevice(d)) return showClassicBluetoothPanel(d)
+          val host = d.ipAddress ?: hostOf(d.address) ?: return showPairingInfo(d)
+          '''
+          if marker not in s:
+              raise SystemExit("showConnectionOptions marker not found")
+          addition = '''    private fun openBasicControl(d: NearbyDevice) {
+          if (isBleDevice(d)) return showBleGattPanel(d)
+          if (isClassicBluetoothDevice(d)) return showClassicBluetoothPanel(d)
+
+          val host = d.ipAddress ?: hostOf(d.address)
+          val radioOnly = d.protocol.contains("Wi-Fi", true) || d.id.startsWith("wifi:")
+          if (host != null) {
+              toast("Проверяю базовые команды и штатные API…")
+              return detectAndOpenRemote(d)
+          }
+          if (radioOnly) return showPairingInfo(d)
+
+          if (d.macAddress != null) {
+              AlertDialog.Builder(this)
+                  .setTitle("Базовое управление • ${d.name}")
+                  .setMessage(
+                      "IPv4/API сейчас не подтверждён. Если устройство поддерживает Wake-on-LAN, можно попробовать включение по MAC. " +
+                          "Выключение без штатного API невозможно: для него нужен поддерживаемый протокол самого устройства."
+                  )
+                  .setPositiveButton("⚡ Включить по Wake-on-LAN") { _, _ -> sendWake(d) }
+                  .setNeutralButton("Варианты подключения") { _, _ -> showPairingInfo(d) }
+                  .setNegativeButton("Закрыть", null)
+                  .show()
+              return
+          }
+          showPairingInfo(d)
+      }
+
+'''
+          s = s.replace(marker, addition + marker, 1)
+
+          old = '''val positiveLabel = if (radioOnly && !hasHost) "Открыть Wi‑Fi" else "Подключение / пароль"'''
+          new = '''val positiveLabel = if (radioOnly && !hasHost) "Wi‑Fi / сканировать LAN" else "Подключение / пароль"'''
+          if old not in s:
+              raise SystemExit("positiveLabel not found")
+          s = s.replace(old, new, 1)
+
+          old = '''            if (radioOnly && !hasHost) {
+                  runCatching { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+                      .onFailure { toast("Не удалось открыть настройки Wi‑Fi") }
+              } else {
+                  showConnectionOptions(device)
+              }'''
+          new = '''            if (radioOnly && !hasHost) {
+                  AlertDialog.Builder(this)
+                      .setTitle("Wi‑Fi • ${device.name}")
+                      .setMessage(
+                          "Пароль Wi‑Fi даёт доступ к сети, но не является паролем управления всеми устройствами. " +
+                              "Если Android уже подключён к нужной сети, запустите LAN-сканирование — UniversalRemote найдёт реальные IP/API этой сети."
+                      )
+                      .setItems(arrayOf(
+                          "✓ Я уже подключён — сканировать LAN",
+                          "⚙ Открыть настройки Wi‑Fi"
+                      )) { _, which ->
+                          if (which == 0) {
+                              toast("Сканирую текущую Wi‑Fi/LAN сеть…")
+                              startScan()
+                          } else {
+                              runCatching { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+                                  .onFailure { toast("Не удалось открыть настройки Wi‑Fi") }
+                          }
+                      }
+                      .setNegativeButton("Закрыть", null)
+                      .show()
+              } else {
+                  showConnectionOptions(device)
+              }'''
+          if old not in s:
+              raise SystemExit("Wi-Fi action block not found")
+          s = s.replace(old, new, 1)
+
+          old = '''        "Bluetooth Classic: $address\n\nДля колонок, наушников, клавиатур и других Classic-устройств пароль/PIN обрабатывает штатный Android Bluetooth pairing. После сопряжения профиль A2DP/HFP/HID подключает сама система, если устройство его поддерживает.",'''
+          new = '''        "Bluetooth Classic: $address\n\nCompanion на наушниках/колонке не нужен. Если устройство уже было сопряжено или поддерживает Just Works, Android может выполнить bonding без ручного PIN. Если устройство требует подтверждение/код или не находится в pairing mode, UniversalRemote не может обходить это требование. После сопряжения A2DP/HFP/HID подключает сама система.",'''
+          if old not in s:
+              raise SystemExit("Classic text not found")
+          s = s.replace(old, new, 1)
+
+          old = '''    layout.addView(controlRow("🔐 СОПРЯЧЬ ЧЕРЕЗ ANDROID") {'''
+          new = '''    layout.addView(controlRow("🔐 ПОДКЛЮЧИТЬ / СОПРЯЧЬ ЧЕРЕЗ ANDROID") {'''
+          if old not in s:
+              raise SystemExit("Classic pair button not found")
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+
+          for path in [Path("app/build.gradle.kts"), Path("companion/build.gradle.kts")]:
+              t = path.read_text()
+              t = t.replace("versionCode = 23", "versionCode = 24")
+              t = t.replace('versionName = "0.9.10"', 'versionName = "0.9.11"')
+              path.write_text(t)
+          PY
+
+      - name: Commit source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "UniversalRemote CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add app/src/main/java/com/example/universalremote/MainActivity.kt app/build.gradle.kts companion/build.gradle.kts
+          git commit -m "Add basic control flow in v0.9.11"
+          git push origin HEAD:fix/v0.9.11-basic-controls
