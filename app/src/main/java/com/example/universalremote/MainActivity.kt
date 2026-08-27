@@ -601,7 +601,7 @@ class MainActivity : AppCompatActivity() {
             else analyzeButton.isEnabled = false
             wolButton.isEnabled = d0.macAddress != null
             healthButton.isEnabled = hostOf(d0.address) != null || d0.ipAddress != null
-            controlTestButton.isEnabled = isBleDevice(d0) || isClassicBluetoothDevice(d0) || hostOf(d0.address) != null || d0.ipAddress != null
+            controlTestButton.isEnabled = true
         }
         dialog.show()
     }
