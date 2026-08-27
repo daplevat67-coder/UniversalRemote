@@ -14,6 +14,7 @@ import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import kotlin.math.max
@@ -48,7 +49,7 @@ class CompanionMainActivity : AppCompatActivity() {
             setPadding(32, 56, 32, 32)
             setBackgroundColor(Color.rgb(7, 17, 31))
         }
-        root.addView(label("UNIVERSALREMOTE COMPANION • v0.9.5", 13f, Color.rgb(101, 230, 196), true))
+        root.addView(label("UNIVERSALREMOTE COMPANION • v${BuildConfig.VERSION_NAME}", 13f, Color.rgb(101, 230, 196), true))
         root.addView(label("Этот телефон можно управлять только после явного сопряжения.", 20f, Color.WHITE, true).apply { setPadding(0, 22, 0, 18) })
         root.addView(label("Одноразовый код • действует 5 минут", 13f, Color.LTGRAY, false))
         code = label("———— ———— ————", 30f, Color.rgb(114, 241, 206), true).apply { setPadding(0, 8, 0, 12) }
@@ -57,7 +58,7 @@ class CompanionMainActivity : AppCompatActivity() {
         root.addView(status)
         root.addView(button("Запустить Companion") { startCompanion() })
         root.addView(button("Новый pairing-код") { startService(Intent(this, CompanionService::class.java).setAction(CompanionService.ACTION_ROTATE)) })
-        root.addView(button("Разрешить Home / Back / Recents") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) })
+        root.addView(button("Разрешить Home / Back / Recents") { showAccessibilityDisclosure() })
 
         root.addView(label("СОПРЯЖЁННЫЕ ПУЛЬТЫ", 13f, Color.rgb(101, 230, 196), true).apply { setPadding(0, 24, 0, 8) })
         pairedBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -73,6 +74,25 @@ class CompanionMainActivity : AppCompatActivity() {
 
     override fun onStart() { super.onStart(); handler.post(refresh) }
     override fun onStop() { handler.removeCallbacks(refresh); super.onStop() }
+
+    private fun showAccessibilityDisclosure() {
+        AlertDialog.Builder(this)
+            .setTitle("Доступ Home / Back / Recents")
+            .setMessage(
+                "UniversalRemote Companion использует службу Accessibility только для выполнения системных действий Home, Back и Recents после команды от ранее сопряжённого пульта.\n\n" +
+                    "Приложение не читает текст или содержимое окон, не записывает касания, не выполняет жесты и не передаёт данные экрана разработчику. Без этого доступа громкость и media-команды продолжат работать.\n\n" +
+                    "Доступ можно отключить в настройках Android в любой момент."
+            )
+            .setNegativeButton("Отмена", null)
+            .setPositiveButton("Я понимаю — открыть настройки") { _, _ ->
+                getSharedPreferences("accessibility_disclosure", MODE_PRIVATE)
+                    .edit()
+                    .putLong("accepted_at", System.currentTimeMillis())
+                    .apply()
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+            .show()
+    }
 
     private fun refreshPairedControllers() {
         val snapshot = CompanionService.pairedControllers

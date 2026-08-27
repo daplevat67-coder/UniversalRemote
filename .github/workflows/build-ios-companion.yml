@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 env:
-  VERSION: 0.9.6
+  VERSION: 0.9.7
   IOS_BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID }}
   IOS_P12_BASE64: ${{ secrets.IOS_P12_BASE64 }}
   IOS_P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
@@ -38,6 +38,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Require Xcode 26 and iOS 26 SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)
+          XCODE_MAJOR=$(xcodebuild -version | awk '/Xcode/{split($2,a,"."); print a[1]}')
+          SDK_MAJOR=${SDK_VERSION%%.*}
+          echo "iPhoneOS SDK $SDK_VERSION"
+          if (( XCODE_MAJOR < 26 || SDK_MAJOR < 26 )); then
+            echo "App Store release requires Xcode 26+ and iOS 26 SDK+." >&2
+            exit 1
+          fi
+          echo "Xcode/SDK gate: passed" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install XcodeGen
         shell: bash
@@ -54,7 +69,7 @@ jobs:
         working-directory: ios-companion
         run: xcodebuild -list -project UniversalRemoteIOSCompanion.xcodeproj
 
-      - name: Compile for iOS Simulator (unsigned check)
+      - name: Compile for iOS Simulator
         working-directory: ios-companion
         run: |
           set -euo pipefail
@@ -67,6 +82,30 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
+      - name: Run iOS unit tests
+        working-directory: ios-companion
+        shell: bash
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for runtime in d.values() for x in runtime if x.get("isAvailable") and "iPhone" in x.get("name", "")))')
+          xcodebuild \
+            -project UniversalRemoteIOSCompanion.xcodeproj \
+            -scheme UniversalRemoteIOSCompanion \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$UDID" \
+            -derivedDataPath "$RUNNER_TEMP/ios-test-derived" \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+
+      - name: Verify privacy manifest is bundled
+        shell: bash
+        run: |
+          set -euo pipefail
+          plutil -lint ios-companion/UniversalRemoteIOSCompanion/PrivacyInfo.xcprivacy
+          test -n "$(find "$RUNNER_TEMP/ios-simulator-derived/Build/Products" -path '*.app/PrivacyInfo.xcprivacy' -print -quit)"
+          echo "Privacy manifest: bundled" >> "$GITHUB_STEP_SUMMARY"
+          echo "Export compliance: must be answered truthfully in App Store Connect; CI does not auto-declare an exemption." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Check whether signing is configured
         id: signing
         shell: bash
@@ -76,7 +115,7 @@ jobs:
             echo "Signing configured: yes" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "Signing configured: no — simulator compile succeeded; signed IPA skipped." >> "$GITHUB_STEP_SUMMARY"
+            echo "Signing configured: no — simulator build/tests succeeded; signed IPA skipped." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Import Apple Distribution certificate and provisioning profile
@@ -146,6 +185,7 @@ jobs:
             CODE_SIGN_IDENTITY="${{ steps.apple_signing.outputs.identity }}" \
             PROVISIONING_PROFILE_SPECIFIER="${{ steps.apple_signing.outputs.profile_name }}" \
             archive
+          test -f "$RUNNER_TEMP/UniversalRemoteIOSCompanion.xcarchive/Products/Applications/UniversalRemote iOS Companion.app/PrivacyInfo.xcprivacy"
           echo "Device archive: success" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Export signed IPA for App Store Connect / TestFlight
@@ -188,7 +228,7 @@ jobs:
         if: steps.signing.outputs.ready == 'true'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: UniversalRemote-iOS-Companion-v0.9.6-IPA
+          name: UniversalRemote-iOS-Companion-v0.9.7-IPA
           if-no-files-found: error
           retention-days: 30
           path: dist/ios/
@@ -211,7 +251,6 @@ jobs:
           mkdir -p "$KEY_DIR"
           printf '%s' "$ASC_PRIVATE_KEY_BASE64" | base64 --decode > "$KEY_DIR/AuthKey_${ASC_KEY_ID}.p8"
           chmod 600 "$KEY_DIR/AuthKey_${ASC_KEY_ID}.p8"
-
           xcrun altool \
             --upload-app \
             --type ios \
@@ -225,8 +264,8 @@ jobs:
         shell: bash
         run: |
           cat <<'EOF'
-          iOS source compiled for Simulator successfully.
-          A real installable IPA requires these repository secrets:
+          iOS source compiled and unit tests passed.
+          A real installable IPA requires repository secrets:
           IOS_BUNDLE_ID
           IOS_P12_BASE64
           IOS_P12_PASSWORD

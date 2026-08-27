@@ -3,17 +3,23 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val storeApplicationId = System.getenv("ANDROID_COMPANION_APPLICATION_ID")
+    ?.trim()
+    ?.takeIf { it.isNotBlank() }
+    ?: "com.example.universalremote.companion"
+
 android {
     namespace = "com.example.universalremote.companion"
-    compileSdk = 35
+    compileSdk = 36
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
+    buildFeatures { buildConfig = true }
     defaultConfig {
-        applicationId = "com.example.universalremote.companion"
+        applicationId = storeApplicationId
         minSdk = 26
-        targetSdk = 35
-        versionCode = 19
-        versionName = "0.9.6"
+        targetSdk = 36
+        versionCode = 24
+        versionName = "0.9.11"
     }
 }
 
@@ -36,4 +42,5 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
+    testImplementation("junit:junit:4.13.2")
 }

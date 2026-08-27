@@ -8,4 +8,15 @@ local.properties
 __pycache__/
 *.pyc
 *.apk
+*.aab
 apk-*/
+
+# Signing / secrets — never commit these
+*.jks
+*.keystore
+*.p12
+*.p8
+*.mobileprovision
+.env
+.env.*
+!/.env.example

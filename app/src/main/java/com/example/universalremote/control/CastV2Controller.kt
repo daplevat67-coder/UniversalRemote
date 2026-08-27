@@ -17,20 +17,23 @@ import javax.net.ssl.SSLSocket
 class CastV2Controller(context: Context) {
     data class Result(val ok: Boolean, val message: String)
 
+    private val app = context.applicationContext
     private val executor = Executors.newFixedThreadPool(3)
     private val requestIds = AtomicInteger(1)
-    private val secrets = SecureStore(context, "cast_tls_pins")
+    private val secrets = SecureStore(app, "cast_tls_pins")
     private val tofu = TofuTls(secrets, "cast")
 
     fun isTlsTrusted(host: String): Boolean = tofu.isPinned(host)
     fun inspectTls(host: String, callback: (Result, String?) -> Unit) = executor.execute {
         val pair = runCatching {
-            require(LocalEndpointPolicy.isPrivateIpv4(host)) { "Cast: адрес вне private LAN" }
-            Result(true, "Cast TLS fingerprint получен") to tofu.inspectFingerprint(host, 8009)
+            LocalEndpointPolicy.requireCurrentWifiSubnet(app, host)
+            Result(true, "Cast TLS fingerprint получен через текущую LAN") to
+                tofu.inspectFingerprint(LocalEndpointPolicy.currentNetwork(app), host, 8009)
         }.getOrElse { Result(false, "Cast TLS: ${it.message ?: it.javaClass.simpleName}") to null }
         callback(pair.first, pair.second)
     }
     fun approveTls(host: String, fingerprint: String): Result = runCatching {
+        LocalEndpointPolicy.requireCurrentWifiSubnet(app, host)
         tofu.approve(host, fingerprint); Result(true, "Cast TLS-сертификат закреплён")
     }.getOrElse { Result(false, "Cast TLS: ${it.message}") }
 
@@ -55,8 +58,8 @@ class CastV2Controller(context: Context) {
     fun media(host: String, action: String, callback: (Result) -> Unit) = run(host, callback) { session ->
         val receiver = session.receiverStatus()
         val apps = receiver.optJSONObject("status")?.optJSONArray("applications")
-        val app = apps?.optJSONObject(0) ?: return@run Result(false, "Cast: сейчас нет активного приложения")
-        val transportId = app.optString("transportId")
+        val appInfo = apps?.optJSONObject(0) ?: return@run Result(false, "Cast: сейчас нет активного приложения")
+        val transportId = appInfo.optString("transportId")
         if (transportId.isBlank()) return@run Result(false, "Cast: transportId не найден")
         session.connectDestination(transportId)
         val mediaStatus = session.mediaStatus(transportId)
@@ -74,7 +77,7 @@ class CastV2Controller(context: Context) {
     private fun run(host: String, callback: (Result) -> Unit, block: (Session) -> Result) {
         executor.execute {
             val result = runCatching {
-                require(LocalEndpointPolicy.isPrivateIpv4(host)) { "разрешены только private LAN IPv4" }
+                LocalEndpointPolicy.requireCurrentWifiSubnet(app, host)
                 open(host).use { socket ->
                     val value = block(Session(socket))
                     if (value.ok) tofu.pin(host, socket)
@@ -86,7 +89,9 @@ class CastV2Controller(context: Context) {
     }
 
     private fun open(host: String): SSLSocket {
-        val raw = java.net.Socket()
+        LocalEndpointPolicy.requireCurrentWifiSubnet(app, host)
+        val network = LocalEndpointPolicy.currentNetwork(app)
+        val raw = network?.socketFactory?.createSocket() ?: java.net.Socket()
         raw.connect(InetSocketAddress(host, 8009), 2200)
         raw.soTimeout = 2800
         val socket = tofu.sslContext(host).socketFactory.createSocket(raw, host, 8009, true) as SSLSocket
@@ -153,11 +158,11 @@ class CastV2Controller(context: Context) {
 
     private fun encodeCastMessage(source: String, destination: String, namespace: String, payload: String): ByteArray {
         val out = ByteArrayOutputStream()
-        writeVarintField(out, 1, 0) // CASTV2_1_0
+        writeVarintField(out, 1, 0)
         writeStringField(out, 2, source)
         writeStringField(out, 3, destination)
         writeStringField(out, 4, namespace)
-        writeVarintField(out, 5, 0) // STRING
+        writeVarintField(out, 5, 0)
         writeStringField(out, 6, payload)
         return out.toByteArray()
     }

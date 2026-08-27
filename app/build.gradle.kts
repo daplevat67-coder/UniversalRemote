@@ -3,17 +3,23 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val storeApplicationId = System.getenv("ANDROID_APPLICATION_ID")
+    ?.trim()
+    ?.takeIf { it.isNotBlank() }
+    ?: "com.example.universalremote"
+
 android {
     namespace = "com.example.universalremote"
-    compileSdk = 35
+    compileSdk = 36
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
+    buildFeatures { buildConfig = true }
     defaultConfig {
-        applicationId = "com.example.universalremote"
+        applicationId = storeApplicationId
         minSdk = 26
-        targetSdk = 35
-        versionCode = 19
-        versionName = "0.9.6"
+        targetSdk = 36
+        versionCode = 24
+        versionName = "0.9.11"
     }
 }
 

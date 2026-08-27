@@ -21,7 +21,8 @@ class HueController(context: Context) {
     data class Result(val ok: Boolean, val message: String)
     data class Light(val id: String, val name: String)
 
-    private val secrets = SecureStore(context, "hue_bridges")
+    private val app = context.applicationContext
+    private val secrets = SecureStore(app, "hue_bridges")
     private val tofu = TofuTls(secrets, "hue")
     private val jsonType = "application/json; charset=utf-8".toMediaType()
     private val clients = ConcurrentHashMap<String, OkHttpClient>()
@@ -31,23 +32,26 @@ class HueController(context: Context) {
     fun isTlsTrusted(host: String): Boolean = tofu.isPinned(host)
     fun inspectTls(host: String, callback: (Result, String?) -> Unit) = executor.execute {
         val pair = runCatching {
-            require(LocalEndpointPolicy.isPrivateIpv4(host)) { "Hue: адрес вне private LAN" }
-            Result(true, "Hue TLS fingerprint получен") to tofu.inspectFingerprint(host, 443)
+            LocalEndpointPolicy.requireCurrentWifiSubnet(app, host)
+            Result(true, "Hue TLS fingerprint получен через текущую LAN") to
+                tofu.inspectFingerprint(LocalEndpointPolicy.currentNetwork(app), host, 443)
         }.getOrElse { Result(false, "Hue TLS: ${it.message ?: it.javaClass.simpleName}") to null }
         callback(pair.first, pair.second)
     }
     fun approveTls(host: String, fingerprint: String): Result = runCatching {
+        LocalEndpointPolicy.requireCurrentWifiSubnet(app, host)
         tofu.approve(host, fingerprint); Result(true, "Hue TLS-сертификат закреплён")
     }.getOrElse { Result(false, "Hue TLS: ${it.message}") }
     fun forget(host: String) {
         secrets.remove("key_$host", "scheme_$host", "fp_$host")
         tofu.forget(host)
-        clients.remove(host)?.closeResources()
+        val prefix = "$host@"
+        clients.keys.filter { it.startsWith(prefix) }.forEach { key -> clients.remove(key)?.closeResources() }
     }
 
     /** Passive bridge identification. HTTP fallback never carries an application key. */
     fun probe(host: String, callback: (Result) -> Unit) {
-        if (!LocalEndpointPolicy.isPrivateIpv4(host)) return callback(Result(false, "Hue: разрешены только private LAN IPv4"))
+        if (!LocalEndpointPolicy.isInCurrentWifiSubnet(app, host)) return callback(Result(false, "Hue: адрес вне текущей Wi-Fi/LAN подсети"))
         val urls = listOf("https://$host/api/config", "http://$host/api/config")
         fun attempt(index: Int) {
             if (index >= urls.size) return callback(Result(false, "Philips Hue Bridge API не найден"))
@@ -72,7 +76,7 @@ class HueController(context: Context) {
     }
 
     fun pair(host: String, callback: (Result) -> Unit) {
-        if (!LocalEndpointPolicy.isPrivateIpv4(host)) return callback(Result(false, "Hue: адрес вне private LAN"))
+        if (!LocalEndpointPolicy.isInCurrentWifiSubnet(app, host)) return callback(Result(false, "Hue: адрес вне текущей Wi-Fi/LAN подсети"))
         val body = JSONObject().put("devicetype", "universal_remote#android").put("generateclientkey", true).toString().toRequestBody(jsonType)
         val request = Request.Builder().url("https://$host/api").post(body).build()
         client(host).newCall(request).enqueue(object : okhttp3.Callback {
@@ -134,11 +138,8 @@ class HueController(context: Context) {
     }
 
     private fun api(host: String, method: String, path: String, body: JSONObject?, callback: (Result, String?) -> Unit) {
-        if (!LocalEndpointPolicy.isPrivateIpv4(host)) return callback(Result(false, "Hue: адрес вне private LAN"), null)
-        if (!tofu.isPinned(host) && secrets.getString("key_$host") != null) {
-            // Legacy v0.7.0 key has no certificate binding; require the physical Hue link button once more.
-            secrets.remove("key_$host")
-        }
+        if (!LocalEndpointPolicy.isInCurrentWifiSubnet(app, host)) return callback(Result(false, "Hue: адрес вне текущей Wi-Fi/LAN подсети"), null)
+        if (!tofu.isPinned(host) && secrets.getString("key_$host") != null) secrets.remove("key_$host")
         val appKey = secrets.getString("key_$host") ?: return callback(Result(false, "Сначала нажмите кнопку на Hue Bridge и авторизуйте приложение"), null)
         val builder = Request.Builder().url("https://$host$path").header("hue-application-key", appKey)
         when (method) {
@@ -160,17 +161,22 @@ class HueController(context: Context) {
         })
     }
 
-    private fun client(host: String): OkHttpClient = clients.getOrPut(host) {
-        val trust = tofu.trustManager(host)
-        val ssl = tofu.sslContext(host)
-        OkHttpClient.Builder()
-            .connectTimeout(3, TimeUnit.SECONDS)
-            .readTimeout(5, TimeUnit.SECONDS)
-            .followRedirects(false)
-            .followSslRedirects(false)
-            .sslSocketFactory(ssl.socketFactory, trust)
-            .hostnameVerifier { _, session -> tofu.verifyPinnedSession(host, session) }
-            .build()
+    private fun client(host: String): OkHttpClient {
+        val network = LocalEndpointPolicy.currentNetwork(app)
+        val cacheKey = "$host@${network?.networkHandle ?: 0L}"
+        return clients.getOrPut(cacheKey) {
+            val trust = tofu.trustManager(host)
+            val ssl = tofu.sslContext(host)
+            OkHttpClient.Builder()
+                .apply { if (network != null) socketFactory(network.socketFactory) }
+                .connectTimeout(3, TimeUnit.SECONDS)
+                .readTimeout(5, TimeUnit.SECONDS)
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .sslSocketFactory(ssl.socketFactory, trust)
+                .hostnameVerifier { _, session -> tofu.verifyPinnedSession(host, session) }
+                .build()
+        }
     }
 
     private fun OkHttpClient.closeResources() {

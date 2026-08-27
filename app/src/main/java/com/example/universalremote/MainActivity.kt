@@ -1,6 +1,7 @@
 package com.example.universalremote
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
@@ -12,6 +13,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -31,6 +33,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.example.universalremote.control.AndroidTvController
+import com.example.universalremote.control.BleGattController
 import com.example.universalremote.control.CastV2Controller
 import com.example.universalremote.control.CompanionController
 import com.example.universalremote.control.HueController
@@ -88,6 +91,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var lgWebOs: LgWebOsController
     private lateinit var hue: HueController
     private lateinit var androidTv: AndroidTvController
+    private lateinit var bleGatt: BleGattController
     private lateinit var analyzer: DeviceAnalyzer
     private val wol = WakeOnLanController()
     private lateinit var healthProbe: ServiceHealthProbe
@@ -107,8 +111,6 @@ class MainActivity : AppCompatActivity() {
     private val stopLanAfterGrace = Runnable { runCatching { lan.stop() } }
 
     private val finishScan = Runnable {
-        // Radio/multicast windows are time-bounded, but LAN gets an extra grace period so a /22 sweep
-        // is not killed merely because the UI discovery timer expired.
         stopShortSources()
         handler.removeCallbacks(stopLanAfterGrace)
         handler.postDelayed(stopLanAfterGrace, 60_000L)
@@ -124,6 +126,7 @@ class MainActivity : AppCompatActivity() {
         supportActionBar?.hide()
         ensureDiscoverySourcesEnabled()
         androidTv = AndroidTvController(this)
+        bleGatt = BleGattController(this)
         samsung = SamsungTvController(this)
         lgWebOs = LgWebOsController(this)
         hue = HueController(this)
@@ -149,9 +152,17 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(26), dp(18), dp(14))
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c("#07111F"), c("#101B35"), c("#132842")))
         }
-        root.addView(text("UNIVERSAL REMOTE • v0.9.5", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
-        root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
-        root.addView(text("Двухфазный LAN-поиск • Android + iOS/iPadOS Companion • Apple/Bonjour • API verification • TV • Cast • Hue • Yeelight • WLED", 13f, c("#AABBD4"), false))
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val titleBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        titleBox.addView(text("UNIVERSAL REMOTE • v${BuildConfig.VERSION_NAME}", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+        titleBox.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
+        header.addView(titleBox, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(gearButton { showSettingsHub() }, LinearLayout.LayoutParams(dp(56), dp(52)).apply { marginStart = dp(10) })
+        root.addView(header)
+        root.addView(text("Автоподключение по штатным LAN API • пароль/PIN используется только там, где протокол его реально поддерживает", 13f, c("#AABBD4"), false))
 
         val radar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -175,15 +186,6 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { requestAndScan() }
         }
         root.addView(scanButton, LinearLayout.LayoutParams(-1, dp(54)))
-
-        val tools = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(9), 0, dp(8)) }
-        tools.addView(smallButton("ФИЛЬТРЫ") { showFilters() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(5) })
-        tools.addView(smallButton("НАСТРОЙКИ СКАНЕРА") { showSettings() }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginStart = dp(5) })
-        root.addView(tools)
-        root.addView(smallButton("РУЧНОЙ IP / ПРОВЕРКА УПРАВЛЕНИЯ") { showManualControl() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
-        root.addView(smallButton("ДИАГНОСТИКА ПОИСКА") { showDiscoveryDiagnostics() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
-        root.addView(smallButton("📱 КАК УПРАВЛЯТЬ ANDROID-ТЕЛЕФОНОМ") { showCompanionHelp() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(6)) })
-        root.addView(smallButton("🍎 IPHONE / IPAD • БЕЗ ПРИЛОЖЕНИЯ И С COMPANION") { showIosHelp() }, LinearLayout.LayoutParams(-1, dp(44)).apply { setMargins(0, 0, 0, dp(8)) })
 
         search = EditText(this).apply {
             hint = "Поиск: имя, IP, MAC, порт, бренд…"
@@ -220,7 +222,6 @@ class MainActivity : AppCompatActivity() {
                 add(Manifest.permission.BLUETOOTH_CONNECT)
             }
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.NEARBY_WIFI_DEVICES)
-            // Wi-Fi scan results can reveal location, so Android still requires precise location.
             add(Manifest.permission.ACCESS_COARSE_LOCATION)
             add(Manifest.permission.ACCESS_FINE_LOCATION)
         }.toTypedArray()
@@ -229,8 +230,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun ensureDiscoverySourcesEnabled() {
         val keys = listOf("ble", "classic", "wifi_radio", "mdns", "ssdp", "lan", "pjlink", "yeelight")
-        // A saved configuration with every source disabled makes the scan button legitimately return 0.
-        // Recover from that state automatically instead of leaving the UI apparently broken.
         if (keys.all { prefs.contains(it) && !prefs.getBoolean(it, true) }) {
             prefs.edit().apply { keys.forEach { putBoolean(it, true) } }.apply()
         }
@@ -302,8 +301,6 @@ class MainActivity : AppCompatActivity() {
 
         var candidate = incoming
         if (host != null && !incoming.protocol.startsWith("LAN")) {
-            // One physical host can advertise itself through mDNS + SSDP + dedicated discovery.
-            // Merge all network-protocol records for the same IPv4 into one card instead of duplicating it.
             val sameHostIds = devices.values
                 .filter { existing ->
                     existing.id != incoming.id &&
@@ -378,6 +375,48 @@ class MainActivity : AppCompatActivity() {
             adapter.submitList(filtered)
         }, 140L)
     }
+
+    private fun showSettingsHub() {
+    val items = arrayOf(
+        "🔎 Фильтры устройств",
+        "📡 Настройки сканера",
+        "🔌 Подключение по IP / пароль / pairing",
+        "🧪 Диагностика поиска",
+        "📱 Android Companion",
+        "🍎 iPhone / iPad",
+        "♻ Сбросить поиск и источники"
+    )
+    AlertDialog.Builder(this)
+        .setTitle("⚙ Настройки")
+        .setItems(items) { _, which ->
+            when (which) {
+                0 -> showFilters()
+                1 -> showSettings()
+                2 -> showManualControl()
+                3 -> showDiscoveryDiagnostics()
+                4 -> showCompanionHelp()
+                5 -> showIosHelp()
+                6 -> {
+                    prefs.edit()
+                        .putString("ip_range", "auto")
+                        .putInt("connect_timeout", 300)
+                        .putInt("parallelism", 32)
+                        .putBoolean("ble", true)
+                        .putBoolean("classic", true)
+                        .putBoolean("wifi_radio", true)
+                        .putBoolean("mdns", true)
+                        .putBoolean("ssdp", true)
+                        .putBoolean("lan", true)
+                        .putBoolean("pjlink", true)
+                        .putBoolean("yeelight", true)
+                        .apply()
+                    requestAndScan()
+                }
+            }
+        }
+        .setNegativeButton("Закрыть", null)
+        .show()
+}
 
     private fun showFilters() {
         val labels = arrayOf("Телевизоры", "Колонки / аудио", "Свет", "Компьютеры", "Проекторы", "Телефоны", "Принтеры", "Другие")
@@ -478,7 +517,7 @@ class MainActivity : AppCompatActivity() {
         val location = getSystemService(android.location.LocationManager::class.java)
         val locationOn = if (Build.VERSION.SDK_INT >= 28) location?.isLocationEnabled == true else true
         val lines = mutableListOf<String>()
-        lines += "Версия: 0.9.5"
+        lines += "Версия: ${BuildConfig.VERSION_NAME}"
         lines += "LAN: ${info?.label ?: "НЕ НАЙДЕН"}"
         lines += "Gateway: ${info?.gateways?.joinToString { it.hostAddress ?: "?" }?.ifBlank { "—" } ?: "—"}"
         lines += "DNS: ${info?.dnsServers?.joinToString { it.hostAddress ?: "?" }?.ifBlank { "—" } ?: "—"}"
@@ -531,13 +570,24 @@ class MainActivity : AppCompatActivity() {
         if (currentDevice(initial.id).macAddress != null) layout.addView(wolButton)
         val healthButton = controlRow("🧪 Проверить стабильность службы") { runHealthProbe(currentDevice(initial.id)) }
         layout.addView(healthButton)
-        val controlTestButton = controlRow("🧭 ОПРЕДЕЛИТЬ РЕАЛЬНЫЙ ПУЛЬТ") { detectAndOpenRemote(currentDevice(initial.id)) }
+        val currentBluetooth = currentDevice(initial.id)
+        val bleCandidate = isBleDevice(currentBluetooth)
+        val classicCandidate = isClassicBluetoothDevice(currentBluetooth)
+        val connectLabel = when {
+            bleCandidate -> "🟦 BLE GATT / СОПРЯЖЕНИЕ"
+            classicCandidate -> "🔵 BLUETOOTH / СОПРЯЖЕНИЕ"
+            else -> "⚡ БАЗОВОЕ УПРАВЛЕНИЕ / АВТО"
+        }
+        val controlTestButton = controlRow(connectLabel) {
+            val current = currentDevice(initial.id)
+            openBasicControl(current)
+        }
         layout.addView(controlTestButton)
 
         val d0 = currentDevice(initial.id)
         when {
             d0.verified -> layout.addView(controlRow("🎛 ОТКРЫТЬ ПУЛЬТ • API ✓") { showRemote(currentDevice(initial.id)) })
-            isRemoteCandidate(d0) -> layout.addView(controlRow("🧭 ПРОВЕРИТЬ И ОТКРЫТЬ ПУЛЬТ") { detectAndOpenRemote(currentDevice(initial.id)) })
+            isRemoteCandidate(d0) -> layout.addView(controlRow("🔌 ВАРИАНТЫ ПОДКЛЮЧЕНИЯ") { showConnectionOptions(currentDevice(initial.id)) })
             else -> layout.addView(controlRow("Как подключить управление") { showPairingInfo(d0) })
         }
         if (isAppleMobile(d0)) {
@@ -549,14 +599,142 @@ class MainActivity : AppCompatActivity() {
         dialog.setOnShowListener {
             if (hostOf(d0.address) != null || d0.ipAddress != null) analyzeDevice(d0, details)
             else analyzeButton.isEnabled = false
-            wolButton.isEnabled = d0.macAddress != null && (hostOf(d0.address) != null || d0.ipAddress != null)
+            wolButton.isEnabled = d0.macAddress != null
             healthButton.isEnabled = hostOf(d0.address) != null || d0.ipAddress != null
-            controlTestButton.isEnabled = hostOf(d0.address) != null || d0.ipAddress != null
+            controlTestButton.isEnabled = true
         }
         dialog.show()
     }
 
     private fun currentDevice(id: String): NearbyDevice = devices[id] ?: NearbyDevice(id, "Устройство", "Неизвестно", "", "")
+
+    private fun isBleDevice(d: NearbyDevice): Boolean =
+d.id.startsWith("ble:", true) || d.protocol.contains("Bluetooth LE", true)
+
+    private fun isClassicBluetoothDevice(d: NearbyDevice): Boolean =
+        d.id.startsWith("bt:", true) || d.protocol.contains("Bluetooth Classic", true)
+
+private fun bleAddress(d: NearbyDevice): String? {
+    val mac = Regex("(?i)^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
+    return listOf(d.macAddress, d.address, d.id.removePrefix("ble:"))
+        .firstOrNull { value -> value != null && mac.matches(value) }
+}
+
+private fun showClassicBluetoothPanel(d: NearbyDevice) {
+    val address = bleAddress(d) ?: return toast("Bluetooth MAC не определён")
+    val scroll = ScrollView(this)
+    val layout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(18), dp(8), dp(18), dp(8))
+    }
+    val status = text(
+        "Bluetooth Classic: $address\n\nCompanion на наушниках/колонке не нужен. Если устройство уже было сопряжено или поддерживает Just Works, Android может выполнить bonding без ручного PIN. Если устройство требует подтверждение/код или не находится в pairing mode, UniversalRemote не может обходить это требование. После сопряжения A2DP/HFP/HID подключает сама система.",
+        13f, Color.WHITE, false
+    ).apply { setTextIsSelectable(true) }
+    layout.addView(status)
+    layout.addView(controlRow("🔐 ПОДКЛЮЧИТЬ / СОПРЯЧЬ ЧЕРЕЗ ANDROID") {
+        status.text = "⏳ Запускаю штатное Bluetooth-сопряжение для $address…"
+        bleGatt.requestBond(address) { ok, message ->
+            runOnUiThread {
+                status.text = if (ok) "✓ $message" else message
+                toast(message)
+            }
+        }
+    })
+    layout.addView(controlRow("🟦 ПРОВЕРИТЬ BLE GATT / DUAL-MODE") {
+        status.text = "⏳ Проверяю, доступен ли этому адресу BLE GATT…"
+        bleGatt.inspect(address) { result -> runOnUiThread { status.text = formatBleGattInspection(result) } }
+    })
+    layout.addView(controlRow("⚙ ОТКРЫТЬ НАСТРОЙКИ BLUETOOTH") {
+        runCatching { startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
+            .onFailure { toast("Не удалось открыть настройки Bluetooth") }
+    })
+    layout.addView(text(
+        "Bluetooth Classic не имеет одного универсального протокола управления. Для JBL/наушников Android после pairing обычно сам подключает аудиопрофиль. BLE GATT проверяется отдельно, если устройство dual-mode или публикует LE-интерфейс.",
+        12f, c("#AABBD4"), false
+    ).apply { setPadding(0, dp(10), 0, 0) })
+    scroll.addView(layout)
+    AlertDialog.Builder(this).setTitle("Bluetooth • ${d.name}").setView(scroll).setNegativeButton("Закрыть", null).show()
+}
+
+private fun showBleGattPanel(d: NearbyDevice) {
+    val address = bleAddress(d) ?: return toast("BLE MAC не определён")
+    val scroll = ScrollView(this)
+    val layout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(18), dp(8), dp(18), dp(8))
+    }
+    val status = text(
+        "BLE: $address\n\nGATT ещё не проверен. Сначала прочитайте сервисы. Если характеристика требует шифрование, используйте штатное Android Bluetooth pairing.",
+        13f,
+        Color.WHITE,
+        false
+    ).apply { setTextIsSelectable(true) }
+    layout.addView(status)
+    layout.addView(controlRow("🔎 ПОДКЛЮЧИТЬСЯ И ПРОЧИТАТЬ GATT") {
+        status.text = "⏳ Подключение к $address и discoverServices()…"
+        bleGatt.inspect(address) { result ->
+            runOnUiThread {
+                status.text = formatBleGattInspection(result)
+                val current = devices[d.id]
+                if (current != null) {
+                    devices[d.id] = current.copy(analysisNote = result.message)
+                    scheduleRender()
+                }
+            }
+        }
+    })
+    layout.addView(controlRow("🔐 ШТАТНОЕ BLUETOOTH-СОПРЯЖЕНИЕ") {
+        status.text = "⏳ Android запускает штатное Bluetooth pairing. Подтвердите PIN/код на системном экране и на устройстве, если он появится."
+        bleGatt.requestBond(address) { ok, message ->
+            runOnUiThread {
+                toast(message)
+                status.text = if (ok) {
+                    "✓ $message\n\nТеперь нажмите «Подключиться и прочитать GATT» ещё раз: после bonding могут открыться защищённые сервисы."
+                } else {
+                    "Pairing: $message"
+                }
+            }
+        }
+    })
+    layout.addView(text(
+        "UniversalRemote не пишет случайные байты в неизвестные vendor-характеристики. Для реального пульта нужен известный формат команд конкретного BLE-протокола. Стандартные и vendor UUID теперь определяются автоматически, а pairing выполняет Android.",
+        12f,
+        c("#AABBD4"),
+        false
+    ).apply { setPadding(0, dp(10), 0, 0) })
+    scroll.addView(layout)
+    AlertDialog.Builder(this)
+        .setTitle("BLE GATT • ${d.name}")
+        .setView(scroll)
+        .setNegativeButton("Закрыть", null)
+        .show()
+}
+
+private fun formatBleGattInspection(result: BleGattController.InspectionResult): String = buildString {
+    appendLine(if (result.ok) "✓ ${result.message}" else "✗ ${result.message}")
+    appendLine("Адрес: ${result.address}")
+    appendLine("Имя: ${result.deviceName ?: "—"}")
+    appendLine("Pairing/bond: ${result.bondState}")
+    if (!result.ok) return@buildString
+    appendLine()
+    appendLine("GATT-сервисы:")
+    result.services.take(32).forEach { service ->
+        appendLine()
+        appendLine("${if (service.primary) "PRIMARY" else "SECONDARY"} • ${service.name}")
+        appendLine(service.uuid)
+        service.characteristics.take(32).forEach { ch ->
+            append("  ↳ ${ch.name} • ${ch.properties.ifEmpty { listOf("без известных свойств") }.joinToString("/")}")
+            appendLine("\n     ${ch.uuid}")
+        }
+    }
+    if (result.services.size > 32) appendLine("\n… ещё ${result.services.size - 32} сервис(ов)")
+    val knownControl = result.services.filter { it.name in setOf("Immediate Alert", "Human Interface Device", "Media Control", "Generic Media Control") }
+    if (knownControl.isNotEmpty()) {
+        appendLine()
+        appendLine("Известные стандартные профили: ${knownControl.joinToString { it.name }}")
+    }
+}.trim()
 
     private fun analyzeDevice(device: NearbyDevice, details: TextView) {
         val host = device.ipAddress ?: hostOf(device.address)
@@ -626,7 +804,6 @@ class MainActivity : AppCompatActivity() {
                 wol.wake(field.text.toString()) { _, message -> runOnUiThread { toast(message) } }
             }.show()
     }
-
 
     private fun enrichControlFromPorts(d: NearbyDevice): NearbyDevice {
         val ports = d.openPorts.map { it.port }.toSet()
@@ -714,10 +891,81 @@ class MainActivity : AppCompatActivity() {
         detectAndOpenRemote(d)
     }
 
-    /**
-     * Targeted re-analysis + protocol verification. A TCP port alone never counts as successful control.
-     * The method uses only passive/status requests until the user explicitly opens a pairing flow.
-     */
+    private fun openBasicControl(d: NearbyDevice) {
+        if (isBleDevice(d)) return showBleGattPanel(d)
+        if (isClassicBluetoothDevice(d)) return showClassicBluetoothPanel(d)
+
+        val host = d.ipAddress ?: hostOf(d.address)
+        val radioOnly = d.protocol.contains("Wi-Fi", true) || d.id.startsWith("wifi:")
+        if (host != null) {
+            toast("Проверяю базовые команды и штатные API…")
+            return detectAndOpenRemote(d)
+        }
+        if (radioOnly) return showPairingInfo(d)
+
+        if (d.macAddress != null) {
+            AlertDialog.Builder(this)
+                .setTitle("Базовое управление • ${d.name}")
+                .setMessage(
+                    "IPv4/API сейчас не подтверждён. Если устройство поддерживает Wake-on-LAN, можно попробовать включение по MAC. " +
+                        "Выключение без штатного API невозможно: для него нужен поддерживаемый протокол самого устройства."
+                )
+                .setPositiveButton("⚡ Включить по Wake-on-LAN") { _, _ -> sendWake(d) }
+                .setNeutralButton("Варианты подключения") { _, _ -> showPairingInfo(d) }
+                .setNegativeButton("Закрыть", null)
+                .show()
+            return
+        }
+        showPairingInfo(d)
+    }
+
+    private fun showConnectionOptions(d: NearbyDevice) {
+        if (isBleDevice(d)) return showBleGattPanel(d)
+        if (isClassicBluetoothDevice(d)) return showClassicBluetoothPanel(d)
+        val host = d.ipAddress ?: hostOf(d.address) ?: return showPairingInfo(d)
+        if (!isInCurrentWifiSubnet(host)) {
+            toast("Подключение разрешено только к private IPv4 текущей Wi‑Fi подсети")
+            return
+        }
+        val options = arrayOf(
+            "⚡ Авто — без пароля, если API это разрешает",
+            "🔐 Пароль / PIN / код / pairing — штатная авторизация",
+            "🎥 PJLink — пароль проектора"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("Подключение • ${d.name}")
+            .setMessage(
+                "Если вы знаете пароль или код, UniversalRemote использует его только в штатном протоколе этого устройства. " +
+                    "Один пароль не является универсальным ключом: разные устройства используют разные API и способы pairing. " +
+                    "Подбор, обход PIN и отключение защиты не выполняются."
+            )
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> detectAndOpenRemote(d)
+                    1 -> openOfficialAuthFlow(d, host)
+                    2 -> pjlink.probe(host) { result -> runOnUiThread {
+                        if (result.ok) showPjLinkRemote(d, host) else toast("PJLink: ${result.message}")
+                    } }
+                }
+            }
+            .setNegativeButton("Закрыть", null)
+            .show()
+    }
+
+    private fun openOfficialAuthFlow(d: NearbyDevice, host: String) {
+        val ports = d.openPorts.map { it.port }.toSet()
+        val idText = listOf(d.name, d.kind, d.brand.orEmpty(), d.protocol, d.hardwareVendor.orEmpty()).joinToString(" ").lowercase()
+        when {
+            d.protocol.contains("UniversalRemote Companion", true) || CompanionController.DEFAULT_PORT in ports -> detectAndOpenRemote(d)
+            "android tv" in idText || "google tv" in idText || 6466 in ports || 6467 in ports -> showAndroidTvRemote(d, host)
+            "webos" in idText || ("lg" in idText && (3000 in ports || 3001 in ports)) -> showLgWebOsRemote(d, host)
+            "samsung" in idText || 8001 in ports || 8002 in ports -> showSamsungRemote(d, host)
+            "philips hue" in idText || "hue bridge" in idText -> showHueRemote(d, host)
+            d.protocol.contains("PJLink", true) || 4352 in ports -> showPjLinkRemote(d, host)
+            else -> detectAndOpenRemote(d)
+        }
+    }
+
     private fun detectAndOpenRemote(d: NearbyDevice) {
         val host = d.ipAddress ?: hostOf(d.address) ?: return showPairingInfo(d)
         val route = WifiNetworkResolver.bindProcessToWifi(this)
@@ -749,7 +997,6 @@ class MainActivity : AppCompatActivity() {
         val ports = d.openPorts.map { it.port }.toSet()
         val idText = listOf(d.name, d.kind, d.brand.orEmpty(), d.protocol, d.hardwareVendor.orEmpty()).joinToString(" ").lowercase()
 
-        // Pairing protocols are selected only from strong discovery evidence / their dedicated ports.
         if (d.protocol.contains("UniversalRemote Companion", true) || CompanionController.DEFAULT_PORT in ports) {
             val port = companionPort(d)
             return companion.probe(host, port) { result -> runOnUiThread {
@@ -858,36 +1105,40 @@ class MainActivity : AppCompatActivity() {
             if (radioOnly) append("Эта запись пришла из Wi‑Fi эфира. Точка доступа может быть видна по радио, но это не означает, что телефон имеет доступ к её локальному API.\n\n")
             append("Поддерживаемый API управления не подтвердился. Приложение не будет отправлять команды наугад.\n\n")
             append(errors.take(6).joinToString("\n") { "• $it" })
-            append("\n\nЕсли это ваше устройство, проверьте: телефон и устройство в одной локальной сети; Guest/AP isolation выключен; на TV разрешено управление с мобильных приложений; для лампы включён LAN Control или выполнена штатная авторизация.")
+            append("\n\nЕсли это ваше устройство, можно открыть варианты штатного подключения: без авторизации, PIN/pairing или PJLink-пароль — в зависимости от протокола.")
         }
-        AlertDialog.Builder(this).setTitle("Управление не подтверждено • ${d.name}").setMessage(msg).setPositiveButton("Понятно", null).show()
+        AlertDialog.Builder(this)
+            .setTitle("Управление не подтверждено • ${d.name}")
+            .setMessage(msg)
+            .setNegativeButton("Закрыть", null)
+            .setPositiveButton("Варианты подключения") { _, _ -> showConnectionOptions(d) }
+            .show()
     }
 
     private fun showCompanionHelp() {
         AlertDialog.Builder(this)
-            .setTitle("Android Companion • v0.9.5")
-            .setMessage("Для управления вторым Android-телефоном установите на него companion-debug.apk из того же GitHub Actions artifact. На втором телефоне откройте Companion → Запустить Companion. Затем здесь запустите поиск, откройте карточку телефона и введите одноразовый 12-символьный код.\n\nГромкость и media работают после pairing. Home/Back/Recents требуют вручную включить Accessibility на управляемом телефоне. PIN/пароль блокировки не используется и не обходится.")
+            .setTitle("Android Companion • v${BuildConfig.VERSION_NAME}")
+            .setMessage("Для управления вторым Android-телефоном установите Companion той же версии. На втором телефоне откройте Companion → Запустить Companion. Затем здесь запустите поиск, откройте карточку телефона и введите одноразовый 12-символьный код.\n\nГромкость и media работают после pairing. Home/Back/Recents требуют вручную включить Accessibility на управляемом телефоне. PIN/пароль блокировки не используется и не обходится.")
             .setPositiveButton("Понятно", null)
             .show()
     }
 
     private fun showIosHelp(device: NearbyDevice? = null) {
         val detected = device?.let {
-            val type = listOf(it.name, it.kind, it.protocol, it.brand.orEmpty(), it.hostname.orEmpty()).joinToString(" ")
             "\n\nНайдено сейчас: ${it.name}\n${it.protocol}\n${it.ipAddress ?: hostOf(it.address) ?: "IPv4 не подтверждён"}"
         }.orEmpty()
         AlertDialog.Builder(this)
-            .setTitle("iPhone / iPad • Companion v0.9.2")
+            .setTitle("iPhone / iPad • Companion v${BuildConfig.VERSION_NAME}")
             .setMessage(
                 "БЕЗ ПРИЛОЖЕНИЯ НА iOS:\n" +
                     "• UniversalRemote ищет Apple Bonjour/Mobile Device признаки и показывает iPhone/iPad как отдельный класс устройств.\n" +
-                    "• Если iPad штатно enrolled в MDM, административные команды (например lock/app management) должны идти через ваш MDM-сервер; PIN экрана не является сетевым паролем.\n" +
+                    "• Если iPad штатно enrolled в MDM, административные команды должны идти через ваш MDM-сервер; PIN экрана не является сетевым паролем.\n" +
                     "• Обычная iPadOS не предоставляет стороннему Android-приложению API для Home/Back/касания по экрану.\n\n" +
                     "С IOS COMPANION:\n" +
-                    "• исходники ios-companion v0.9.2 входят в проект; pairing совместим с Companion v2, код живёт 5 минут, сессии можно отзывать;\n" +
-                    "• доступны Ping, Find/звуковой отклик и яркость экрана, когда Companion активен;\n" +
-                    "• iOS может приостанавливать локальный listener в фоне, поэтому Companion не обещает скрытое/постоянное управление.\n\n" +
-                    "Для установки iOS Companion на физический iPhone/iPad нужна подпись Apple Developer/вашего Team. GitHub CI делает compile-check, но не выдаёт фальшивый неподписанный IPA." + detected
+                    "• pairing совместим с Companion v2, код живёт ограниченное время, сессии можно отзывать;\n" +
+                    "• доступны функции, которые сама iOS разрешает Companion;\n" +
+                    "• iOS может приостанавливать локальный listener в фоне.\n\n" +
+                    "Для установки iOS Companion на физический iPhone/iPad нужна подпись Apple Developer/вашего Team." + detected
             )
             .setPositiveButton("Понятно", null)
             .show()
@@ -906,11 +1157,11 @@ class MainActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_PHONE
         }
         AlertDialog.Builder(this)
-            .setTitle("Проверить управление по IP")
-            .setMessage("Введите IP вашего устройства в текущей локальной сети. Сначала выполняются безопасные status/probe-запросы; команды управления отправляются только после выбора найденного штатного протокола.")
+            .setTitle("Подключиться по IP")
+            .setMessage("Введите IP вашего устройства в текущей локальной сети. После безопасного определения протокола приложение предложит либо прямое подключение без пароля, либо штатный PIN/pairing/пароль, если устройство его требует.")
             .setView(input)
             .setNegativeButton("Отмена", null)
-            .setPositiveButton("Проверить") { _, _ ->
+            .setPositiveButton("Продолжить") { _, _ ->
                 val host = input.text.toString().trim()
                 if (!host.matches(Regex("(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}"))) {
                     toast("Введите корректный IPv4")
@@ -925,7 +1176,7 @@ class MainActivity : AppCompatActivity() {
                         address = host,
                         ipAddress = host
                     )
-                    detectAndOpenRemote(d)
+                    showConnectionOptions(d)
                 }
             }.show()
     }
@@ -1139,7 +1390,6 @@ class MainActivity : AppCompatActivity() {
     private fun runRoku(d: NearbyDevice, host: String, key: String) {
         roku.key(host, key) { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
     }
-
 
     private fun confirmTlsFingerprint(title: String, host: String, fingerprint: String, approve: () -> Pair<Boolean, String>, after: () -> Unit) {
         val pretty = fingerprint.chunked(2).joinToString(":")
@@ -1526,7 +1776,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun addRemoteRow(layout: LinearLayout, vararg actions: Pair<String, () -> Unit>) {
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        actions.forEachIndexed { index, pair ->
+        actions.forEach { pair ->
             if (pair.first.isBlank()) {
                 row.addView(View(this), LinearLayout.LayoutParams(0, dp(48), 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) })
             } else {
@@ -1544,14 +1794,52 @@ class MainActivity : AppCompatActivity() {
     private fun showPairingInfo(d: NearbyDevice? = null) {
         val extra = when {
             d?.protocol?.contains("Matter", true) == true || d?.protocol?.contains("HomeKit", true) == true -> "\n\nMatter/HomeKit требуют штатного commissioning/pairing экосистемы; универсальный контроллер для них ещё не добавлен."
-            isAppleMobile(d ?: NearbyDevice("", "", "", "", "")) -> "\n\niPhone/iPad: без Companion доступны только штатно опубликованные Apple/Bonjour/MDM-функции. PIN/код блокировки не является сетевым паролем. Для Companion используйте добровольное pairing; iOS всё равно не разрешает системные Home/Back/касания стороннему приложению."
+            isAppleMobile(d ?: NearbyDevice("", "", "", "", "")) -> "\n\niPhone/iPad: без Companion доступны только штатно опубликованные Apple/Bonjour/MDM-функции. PIN/код блокировки не является сетевым паролем. Для Companion используйте добровольное pairing."
             d?.brand?.contains("Tuya", true) == true || d?.protocol?.contains("Tuya", true) == true -> "\n\nTuya/Smart Life требует локальный ключ или облачную авторизацию; обход авторизации не выполняется."
-            d?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true -> "\n\nЭто объект Wi‑Fi эфира (SSID/BSSID). Видимый радиосигнал не означает, что к устройству можно отправлять LAN-команды."
+            d?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true -> "\n\nЭто объект Wi‑Fi эфира (SSID/BSSID). Если вы знаете пароль этой Wi‑Fi сети, сначала подключите Android к ней через системные настройки, затем вернитесь в UniversalRemote и повторите поиск. Пароль Wi‑Fi даёт доступ к сети, но не является универсальным паролем управления устройством."
             else -> ""
         }
+        val radioOnly = d?.protocol?.contains("Wi-Fi", true) == true || d?.id?.startsWith("wifi:") == true
+        val bluetoothOnly = d?.let { isBleDevice(it) || isClassicBluetoothDevice(it) } == true
+        val hasHost = d?.ipAddress != null || d?.let { hostOf(it.address) } != null
+        val positiveLabel = when {
+            radioOnly && !hasHost -> "Wi‑Fi / сканировать LAN"
+            bluetoothOnly && !hasHost -> "Bluetooth pairing"
+            else -> "Подключение / пароль"
+        }
         AlertDialog.Builder(this).setTitle("Нужна штатная авторизация")
-            .setMessage("Устройство найдено, но управление возможно только через поддерживаемый штатный протокол с PIN, подтверждением на экране или pairing-токеном. Защиту устройства приложение не обходит.$extra")
-            .setPositiveButton("Понятно", null).show()
+            .setMessage("Устройство найдено, но управление возможно только через поддерживаемый штатный протокол с PIN, подтверждением на экране, pairing-токеном или паролем конкретного API. Защиту устройства приложение не обходит.$extra")
+            .setNegativeButton("Закрыть", null)
+            .setPositiveButton(positiveLabel) { _, _ ->
+        d?.let { device ->
+            when {
+                radioOnly && !hasHost -> AlertDialog.Builder(this)
+                    .setTitle("Wi‑Fi • ${device.name}")
+                    .setMessage(
+                        "Пароль Wi‑Fi даёт доступ к сети, но не является паролем управления всеми устройствами. " +
+                            "Если Android уже подключён к нужной сети, запустите LAN-сканирование — UniversalRemote найдёт реальные IP/API этой сети."
+                    )
+                    .setItems(arrayOf(
+                        "✓ Я уже подключён — сканировать LAN",
+                        "⚙ Открыть настройки Wi‑Fi"
+                    )) { _, which ->
+                        if (which == 0) {
+                            toast("Сканирую текущую Wi‑Fi/LAN сеть…")
+                            startScan()
+                        } else {
+                            runCatching { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+                                .onFailure { toast("Не удалось открыть настройки Wi‑Fi") }
+                        }
+                    }
+                    .setNegativeButton("Закрыть", null)
+                    .show()
+                isBleDevice(device) -> showBleGattPanel(device)
+                isClassicBluetoothDevice(device) -> showClassicBluetoothPanel(device)
+                else -> showConnectionOptions(device)
+            }
+        }
+    }
+            .show()
     }
 
     private fun showUpnpRemote(d: NearbyDevice) {
@@ -1582,7 +1870,7 @@ class MainActivity : AppCompatActivity() {
         layout.addView(controlRow("Громкость +") { sendPjLink(d, password, host) { pw, cb -> pjlink.volume(host, true, pw, cb) } })
         layout.addView(controlRow("Mute") { sendPjLink(d, password, host) { pw, cb -> pjlink.mute(host, true, pw, cb) } })
         layout.addView(controlRow("Unmute") { sendPjLink(d, password, host) { pw, cb -> pjlink.mute(host, false, pw, cb) } })
-        AlertDialog.Builder(this).setTitle("PJLink • $host").setMessage("Пароль используется только для текущей команды и не сохраняется на диск.")
+        AlertDialog.Builder(this).setTitle("PJLink • $host").setMessage("Если проектор не требует пароль — оставьте поле пустым. Если требует — пароль используется только для текущей команды и не сохраняется на диск.")
             .setView(layout).setNegativeButton("Закрыть", null).show()
     }
 
@@ -1664,6 +1952,18 @@ class MainActivity : AppCompatActivity() {
         text = label; isAllCaps = false; textSize = 15f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
         background = rounded(c("#5A1F2B"), 12, c("#B54A5D")); setOnClickListener { action() }
     }
+    private fun gearButton(action: () -> Unit) = TextView(this).apply {
+    text = "⚙"
+    textSize = 28f
+    gravity = Gravity.CENTER
+    setTextColor(Color.WHITE)
+    contentDescription = "Настройки"
+    isClickable = true
+    isFocusable = true
+    background = rounded(c("#172946"), 14, c("#65E6C4"))
+    setOnClickListener { action() }
+}
+
     private fun smallButton(label: String, action: () -> Unit) = Button(this).apply {
         text = label; textSize = 12f; setTextColor(Color.WHITE); isAllCaps = false
         typeface = Typeface.DEFAULT_BOLD; background = rounded(c("#172946"), 14, c("#294466")); setOnClickListener { action() }
@@ -1685,7 +1985,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        stopScan(); upnp.close(); pjlink.close(); roku.close(); samsung.close(); wled.close(); cast.close(); yeelight.close(); lgWebOs.close(); hue.close(); androidTv.close(); analyzer.close(); wol.close(); healthProbe.close()
+        stopScan(); upnp.close(); pjlink.close(); roku.close(); samsung.close(); wled.close(); cast.close(); yeelight.close(); lgWebOs.close(); hue.close(); androidTv.close(); bleGatt.close(); analyzer.close(); wol.close(); healthProbe.close()
         WifiNetworkResolver.unbindProcess(this)
         super.onDestroy()
     }
