@@ -21,7 +21,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      VERSION: 0.9.10
+      VERSION: 0.9.11
       ANDROID_APPLICATION_ID: ${{ vars.ANDROID_APPLICATION_ID }}
       ANDROID_COMPANION_APPLICATION_ID: ${{ vars.ANDROID_COMPANION_APPLICATION_ID }}
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -77,7 +77,7 @@ jobs:
       - name: Upload verified debug APKs
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: UniversalRemote-v0.9.10-verified-debug-APKs
+          name: UniversalRemote-v0.9.11-verified-debug-APKs
           if-no-files-found: error
           retention-days: 30
           path: dist/android-debug/
@@ -135,7 +135,7 @@ jobs:
         if: steps.android_signing.outputs.ready == 'true'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: UniversalRemote-v0.9.10-signed-store-artifacts
+          name: UniversalRemote-v0.9.11-signed-store-artifacts
           if-no-files-found: error
           retention-days: 30
           path: dist/android-release/
