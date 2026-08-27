@@ -576,15 +576,11 @@ class MainActivity : AppCompatActivity() {
         val connectLabel = when {
             bleCandidate -> "🟦 BLE GATT / СОПРЯЖЕНИЕ"
             classicCandidate -> "🔵 BLUETOOTH / СОПРЯЖЕНИЕ"
-            else -> "🔌 ПОДКЛЮЧИТЬСЯ • АВТО / PAIRING"
+            else -> "⚡ БАЗОВОЕ УПРАВЛЕНИЕ / АВТО"
         }
         val controlTestButton = controlRow(connectLabel) {
             val current = currentDevice(initial.id)
-            when {
-                isBleDevice(current) -> showBleGattPanel(current)
-                isClassicBluetoothDevice(current) -> showClassicBluetoothPanel(current)
-                else -> showConnectionOptions(current)
-            }
+            openBasicControl(current)
         }
         layout.addView(controlTestButton)
 
@@ -603,9 +599,9 @@ class MainActivity : AppCompatActivity() {
         dialog.setOnShowListener {
             if (hostOf(d0.address) != null || d0.ipAddress != null) analyzeDevice(d0, details)
             else analyzeButton.isEnabled = false
-            wolButton.isEnabled = d0.macAddress != null && (hostOf(d0.address) != null || d0.ipAddress != null)
+            wolButton.isEnabled = d0.macAddress != null
             healthButton.isEnabled = hostOf(d0.address) != null || d0.ipAddress != null
-            controlTestButton.isEnabled = isBleDevice(d0) || isClassicBluetoothDevice(d0) || hostOf(d0.address) != null || d0.ipAddress != null
+            controlTestButton.isEnabled = true
         }
         dialog.show()
     }
@@ -632,11 +628,11 @@ private fun showClassicBluetoothPanel(d: NearbyDevice) {
         setPadding(dp(18), dp(8), dp(18), dp(8))
     }
     val status = text(
-        "Bluetooth Classic: $address\n\nДля колонок, наушников, клавиатур и других Classic-устройств пароль/PIN обрабатывает штатный Android Bluetooth pairing. После сопряжения профиль A2DP/HFP/HID подключает сама система, если устройство его поддерживает.",
+        "Bluetooth Classic: $address\n\nCompanion на наушниках/колонке не нужен. Если устройство уже было сопряжено или поддерживает Just Works, Android может выполнить bonding без ручного PIN. Если устройство требует подтверждение/код или не находится в pairing mode, UniversalRemote не может обходить это требование. После сопряжения A2DP/HFP/HID подключает сама система.",
         13f, Color.WHITE, false
     ).apply { setTextIsSelectable(true) }
     layout.addView(status)
-    layout.addView(controlRow("🔐 СОПРЯЧЬ ЧЕРЕЗ ANDROID") {
+    layout.addView(controlRow("🔐 ПОДКЛЮЧИТЬ / СОПРЯЧЬ ЧЕРЕЗ ANDROID") {
         status.text = "⏳ Запускаю штатное Bluetooth-сопряжение для $address…"
         bleGatt.requestBond(address) { ok, message ->
             runOnUiThread {
@@ -893,6 +889,34 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
 
     private fun showRemote(d: NearbyDevice) {
         detectAndOpenRemote(d)
+    }
+
+    private fun openBasicControl(d: NearbyDevice) {
+        if (isBleDevice(d)) return showBleGattPanel(d)
+        if (isClassicBluetoothDevice(d)) return showClassicBluetoothPanel(d)
+
+        val host = d.ipAddress ?: hostOf(d.address)
+        val radioOnly = d.protocol.contains("Wi-Fi", true) || d.id.startsWith("wifi:")
+        if (host != null) {
+            toast("Проверяю базовые команды и штатные API…")
+            return detectAndOpenRemote(d)
+        }
+        if (radioOnly) return showPairingInfo(d)
+
+        if (d.macAddress != null) {
+            AlertDialog.Builder(this)
+                .setTitle("Базовое управление • ${d.name}")
+                .setMessage(
+                    "IPv4/API сейчас не подтверждён. Если устройство поддерживает Wake-on-LAN, можно попробовать включение по MAC. " +
+                        "Выключение без штатного API невозможно: для него нужен поддерживаемый протокол самого устройства."
+                )
+                .setPositiveButton("⚡ Включить по Wake-on-LAN") { _, _ -> sendWake(d) }
+                .setNeutralButton("Варианты подключения") { _, _ -> showPairingInfo(d) }
+                .setNegativeButton("Закрыть", null)
+                .show()
+            return
+        }
+        showPairingInfo(d)
     }
 
     private fun showConnectionOptions(d: NearbyDevice) {
@@ -1779,7 +1803,7 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
         val bluetoothOnly = d?.let { isBleDevice(it) || isClassicBluetoothDevice(it) } == true
         val hasHost = d?.ipAddress != null || d?.let { hostOf(it.address) } != null
         val positiveLabel = when {
-            radioOnly && !hasHost -> "Открыть Wi‑Fi"
+            radioOnly && !hasHost -> "Wi‑Fi / сканировать LAN"
             bluetoothOnly && !hasHost -> "Bluetooth pairing"
             else -> "Подключение / пароль"
         }
@@ -1789,8 +1813,26 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
             .setPositiveButton(positiveLabel) { _, _ ->
         d?.let { device ->
             when {
-                radioOnly && !hasHost -> runCatching { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
-                    .onFailure { toast("Не удалось открыть настройки Wi‑Fi") }
+                radioOnly && !hasHost -> AlertDialog.Builder(this)
+                    .setTitle("Wi‑Fi • ${device.name}")
+                    .setMessage(
+                        "Пароль Wi‑Fi даёт доступ к сети, но не является паролем управления всеми устройствами. " +
+                            "Если Android уже подключён к нужной сети, запустите LAN-сканирование — UniversalRemote найдёт реальные IP/API этой сети."
+                    )
+                    .setItems(arrayOf(
+                        "✓ Я уже подключён — сканировать LAN",
+                        "⚙ Открыть настройки Wi‑Fi"
+                    )) { _, which ->
+                        if (which == 0) {
+                            toast("Сканирую текущую Wi‑Fi/LAN сеть…")
+                            startScan()
+                        } else {
+                            runCatching { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+                                .onFailure { toast("Не удалось открыть настройки Wi‑Fi") }
+                        }
+                    }
+                    .setNegativeButton("Закрыть", null)
+                    .show()
                 isBleDevice(device) -> showBleGattPanel(device)
                 isClassicBluetoothDevice(device) -> showClassicBluetoothPanel(device)
                 else -> showConnectionOptions(device)
