@@ -1,0 +1,36 @@
+name: Export UniversalRemote v0.9.11 source
+
+on:
+  push:
+    branches: [ export/v0.9.11-source ]
+    paths:
+      - ".github/workflows/export-v0911-source.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout v0.9.11 source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: export/v0.9.11-source
+
+      - name: Build source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .git
+          rm -f .github/workflows/export-v0911-source.yml
+          find . -type d \( -name build -o -name .gradle \) -prune -exec rm -rf {} +
+          zip -r -9 UniversalRemote-v0.9.11-source.zip .             -x "*.apk" "*.aab" "*.jks" "*.keystore" "*.p12" "*.p8" "*.mobileprovision" ".env" ".env.*"
+
+      - name: Upload source archive
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: UniversalRemote-v0.9.11-source
+          if-no-files-found: error
+          retention-days: 30
+          path: UniversalRemote-v0.9.11-source.zip
