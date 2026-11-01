@@ -6,6 +6,8 @@ plugins {
 android {
     namespace = "com.example.universalremote"
     compileSdk = 35
+    sourceSets.getByName("main").java.srcDir("../shared/src/main/java")
+    sourceSets.getByName("test").java.srcDir("../shared/src/test/java")
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     defaultConfig {
@@ -40,3 +42,4 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     testImplementation("junit:junit:4.13.2")
 }
+

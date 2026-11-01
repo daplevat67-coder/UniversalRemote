@@ -39,6 +39,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
+      - name: Verify response authentication vectors
+        shell: bash
+        run: |
+          swiftc ios-companion/UniversalRemoteIOSCompanion/CompanionCrypto.swift ios-companion/tests/ResponseAuthenticationCheck.swift -o "$RUNNER_TEMP/response-auth-check"
+          "$RUNNER_TEMP/response-auth-check"
+
       - name: Install XcodeGen
         shell: bash
         run: |
@@ -252,3 +258,4 @@ jobs:
             rm -f "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
           fi
           rm -f "$RUNNER_TEMP/distribution.p12" "$RUNNER_TEMP/profile.mobileprovision" "$RUNNER_TEMP/profile.plist" "$RUNNER_TEMP/ExportOptions.plist"
+

@@ -939,7 +939,7 @@ class MainActivity : AppCompatActivity() {
         val scroll = ScrollView(this)
         val layout = remoteLayout(); scroll.addView(layout)
         val status = text(
-            if (companion.isPaired(info.deviceId)) "✓ Companion сопряжён • ${info.name}" else "Нужно один раз ввести код с экрана Companion на управляемом устройстве.",
+            if (companion.isPaired(info.deviceId)) "✓ Companion сопряжён • ${info.name}" else "Введите код с экрана Companion. Доступ действует 24 часа; затем потребуется новый код.",
             13f, if (companion.isPaired(info.deviceId)) c("#72F1CE") else c("#AABBD4"), false
         ).apply { setPadding(0, 0, 0, dp(8)) }
         layout.addView(status)
@@ -1278,15 +1278,15 @@ class MainActivity : AppCompatActivity() {
         layout.addView(powerOffRow("⏻ ВЫКЛЮЧИТЬ TV") { runLg(d, host) { cb -> lgWebOs.powerOff(host, cb) } })
         layout.addView(sectionTitle("НАВИГАЦИЯ"))
         addDpad(layout,
-            { runLg(d, host) { cb -> lgWebOs.button(host, "UP", cb) } },
-            { runLg(d, host) { cb -> lgWebOs.button(host, "LEFT", cb) } },
-            { runLg(d, host) { cb -> lgWebOs.button(host, "ENTER", cb) } },
-            { runLg(d, host) { cb -> lgWebOs.button(host, "RIGHT", cb) } },
-            { runLg(d, host) { cb -> lgWebOs.button(host, "DOWN", cb) } }
+            { runLgButton(d, host, "UP") },
+            { runLgButton(d, host, "LEFT") },
+            { runLgButton(d, host, "ENTER") },
+            { runLgButton(d, host, "RIGHT") },
+            { runLgButton(d, host, "DOWN") }
         )
         addRemoteRow(layout,
-            "⌂ Home" to { runLg(d, host) { cb -> lgWebOs.button(host, "HOME", cb) } },
-            "↩ Back" to { runLg(d, host) { cb -> lgWebOs.button(host, "BACK", cb) } },
+            "⌂ Home" to { runLgButton(d, host, "HOME") },
+            "↩ Back" to { runLgButton(d, host, "BACK") },
             "⏻ Off" to { runLg(d, host) { cb -> lgWebOs.powerOff(host, cb) } }
         )
         addRemoteRow(layout,
@@ -1306,6 +1306,26 @@ class MainActivity : AppCompatActivity() {
             lgWebOs.forget(host); status.text = "Ключ LG удалён. Следующее подключение снова попросит подтверждение на TV."
         })
         AlertDialog.Builder(this).setTitle("LG webOS • ${d.name}").setView(scroll).setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun runLgButton(d: NearbyDevice, host: String, key: String) {
+        ensureLgTls(host) {
+            lgWebOs.button(host, key, { result -> runOnUiThread {
+                if (result.requiresPlaintextConsent) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Отправить кнопку без шифрования?")
+                        .setMessage("LG TV $host использует открытый канал. Тот, кто перехватывает трафик сети, сможет увидеть или изменить эту команду. Разрешение действует только для одного нажатия.")
+                        .setNegativeButton("Отмена", null)
+                        .setPositiveButton("Отправить один раз") { _, _ ->
+                            lgWebOs.button(host, key, { sent -> runOnUiThread {
+                                toast(sent.message); if (sent.ok) markVerified(d.id)
+                            } }, allowPlaintextOnce = true)
+                        }.show()
+                } else {
+                    toast(result.message); if (result.ok) markVerified(d.id)
+                }
+            } })
+        }
     }
 
     private fun runLg(d: NearbyDevice, host: String, action: (((LgWebOsController.Result) -> Unit)) -> Unit) {
@@ -1690,3 +1710,4 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 }
+

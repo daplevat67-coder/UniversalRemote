@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /** LG webOS SSAP controller. Registration is WSS-only; client-key and TLS pin are encrypted. */
 class LgWebOsController(context: Context) {
-    data class Result(val ok: Boolean, val message: String)
+    data class Result(val ok: Boolean, val message: String, val requiresPlaintextConsent: Boolean = false)
 
     private val app = context.applicationContext
     private val secrets = SecureStore(app, "lg_webos_keys")
@@ -58,13 +58,16 @@ class LgWebOsController(context: Context) {
     fun rewind(host: String, callback: (Result) -> Unit) = request(host, "ssap://media.controls/rewind", null, callback)
     fun fastForward(host: String, callback: (Result) -> Unit) = request(host, "ssap://media.controls/fastForward", null, callback)
 
-    fun button(host: String, name: String, callback: (Result) -> Unit) {
+    fun button(host: String, name: String, callback: (Result) -> Unit, allowPlaintextOnce: Boolean = false) {
         pointerSocket(host) { result, socketPath ->
             if (!result.ok || socketPath == null) return@pointerSocket callback(result)
             if (!LocalEndpointPolicy.samePrivateHost(host, socketPath, setOf("ws", "wss")) || !LocalEndpointPolicy.isInCurrentWifiSubnet(app, host)) {
                 return@pointerSocket callback(Result(false, "LG отклонил pointer socket вне текущей Wi-Fi LAN"))
             }
             val plaintext = socketPath.startsWith("ws://", ignoreCase = true)
+            if (plaintext && !allowPlaintextOnce) {
+                return@pointerSocket callback(Result(false, "Телевизор предлагает незашифрованный канал кнопок.", requiresPlaintextConsent = true))
+            }
             val done = AtomicBoolean(false)
             client(host).newWebSocket(Request.Builder().url(socketPath).build(), object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -218,3 +221,4 @@ class LgWebOsController(context: Context) {
         clients.clear()
     }
 }
+

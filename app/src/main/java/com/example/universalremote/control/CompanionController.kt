@@ -5,6 +5,7 @@ import android.util.Base64
 import com.example.universalremote.network.BoundedIo
 import com.example.universalremote.network.LocalEndpointPolicy
 import com.example.universalremote.security.SecureStore
+import com.example.universalremote.protocol.ResponseAuthentication
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
@@ -126,7 +127,15 @@ class CompanionController(context: Context) {
                         }
                         override fun onResponse(call: Call, pairResponse: Response) {
                             pairResponse.use { pr ->
-                                val parsed = runCatching { JSONObject(BoundedIo.readUtf8(pr.body?.byteStream(), 16_384)) }.getOrNull()
+                                val responseKey = ResponseAuthentication.responseKey(sessionKey)
+                                val verifiedBody = try {
+                                    authenticatedBody(pr, responseKey, "pair:${b64(proof)}")
+                                } finally { responseKey.fill(0) }
+                                if (verifiedBody == null) {
+                                    sessionKey.fill(0)
+                                    return callback(Result(false, "Ответ pairing не подтверждён. Обновите Companion; сопряжение не сохранено."))
+                                }
+                                val parsed = runCatching { JSONObject(verifiedBody) }.getOrNull()
                                 val stableId = parsed?.optString("deviceId").orEmpty()
                                 if (pr.isSuccessful && parsed?.optBoolean("ok") == true && stableId.isNotBlank()) {
                                     store.putString(sessionKeyName(stableId), b64(sessionKey))
@@ -148,8 +157,7 @@ class CompanionController(context: Context) {
     }
 
     fun command(host: String, port: Int, deviceId: String, action: String, callback: (Result) -> Unit) {
-        signedEncryptedRequest(host, port, deviceId, "/v2/command", JSONObject().put("action", action).toString()) { result, code ->
-            if (code == 401) forgetLocal(host, port, deviceId)
+        signedEncryptedRequest(host, port, deviceId, "/v2/command", JSONObject().put("action", action).toString()) { result, _ ->
             callback(result)
         }
     }
@@ -186,6 +194,7 @@ class CompanionController(context: Context) {
         val nonce = b64(randomBytes(18))
         val signed = "POST\n$path\n$timestamp\n$nonce\n$body"
         val signature = b64(hmac(key, signed))
+        val responseKey = ResponseAuthentication.responseKey(key)
         key.fill(0)
         val req = Request.Builder().url("http://$host:$port$path")
             .header("X-UR-Client", clientId())
@@ -194,15 +203,28 @@ class CompanionController(context: Context) {
             .header("X-UR-Signature", signature)
             .post(body.toRequestBody(JSON)).build()
         http.newCall(req).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) = callback(Result(false, "Companion не отвечает: ${e.message}"), 0)
+            override fun onFailure(call: Call, e: IOException) {
+                responseKey.fill(0)
+                callback(Result(false, "Companion не отвечает: ${e.message}"), 0)
+            }
             override fun onResponse(call: Call, response: Response) {
                 response.use {
-                    val obj = runCatching { JSONObject(BoundedIo.readUtf8(it.body?.byteStream(), 16_384)) }.getOrNull()
+                    val body = try {
+                        authenticatedBody(it, responseKey, "request:$signature")
+                    } finally { responseKey.fill(0) }
+                    if (body == null) return callback(Result(false, "Ответ Companion не подтверждён. Результат неизвестен; сопряжение сохранено. Проверьте версию и доступ на управляемом устройстве."), 0)
+                    val obj = runCatching { JSONObject(body) }.getOrNull()
                     callback(Result(it.isSuccessful && obj?.optBoolean("ok") == true, obj?.optString("message").takeUnless { msg -> msg.isNullOrBlank() } ?: "HTTP ${it.code}"), it.code)
                 }
             }
         })
     }
+
+    private fun authenticatedBody(response: Response, key: ByteArray, binding: String): String? = runCatching {
+        val body = BoundedIo.readUtf8(response.body?.byteStream(), 16_384)
+        val signature = Base64.decode(response.header(ResponseAuthentication.HEADER) ?: return@runCatching null, Base64.NO_WRAP)
+        body.takeIf { ResponseAuthentication.verify(key, binding, response.code, body, signature) }
+    }.getOrNull()
 
     private fun forgetLocal(host: String, port: Int, deviceId: String) {
         val stable = resolveStableId(host, port, deviceId)
@@ -239,3 +261,4 @@ class CompanionController(context: Context) {
         private val JSON = "application/json; charset=utf-8".toMediaType()
     }
 }
+

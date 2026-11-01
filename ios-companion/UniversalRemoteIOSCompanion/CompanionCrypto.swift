@@ -8,6 +8,11 @@ struct CompanionCrypto {
         return Data(code)
     }
 
+    static func responseSignature(sessionKey: Data, binding: String, status: Int, body: String) -> String {
+        let key = hmac(key: sessionKey, text: "UniversalRemote Companion response key v1")
+        return hmac(key: key, text: "response-v1\n\(binding)\n\(status)\n\(body)").base64EncodedString()
+    }
+
     static func base64(_ data: Data) -> String { data.base64EncodedString() }
 
     static func fromBase64(_ value: String) -> Data? { Data(base64Encoded: value) }
@@ -36,3 +41,4 @@ struct CompanionCrypto {
 
     enum CryptoError: Error { case invalidPayload }
 }
+
