@@ -1,6 +1,8 @@
 package com.example.universalremote.ui
 
 import android.content.Context
+import android.content.res.ColorStateList
+import android.graphics.drawable.RippleDrawable
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -28,14 +30,16 @@ class DeviceAdapter(
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(context, 14), dp(context, 10), dp(context, 12), dp(context, 10))
-            background = rounded(context, Color.parseColor("#172946"), 18, Color.parseColor("#294466"))
+            background = RippleDrawable(ColorStateList.valueOf(0x30FFFFFF),
+                rounded(context, Color.parseColor("#161616"), 18, Color.parseColor("#363636")), null)
+            isFocusable = true
         }
     ) {
         private val context = itemView.context
         private val row = itemView as LinearLayout
         private val icon = ImageView(context).apply {
             setPadding(dp(context, 13), dp(context, 13), dp(context, 13), dp(context, 13))
-            background = rounded(context, Color.parseColor("#274164"), 14)
+            background = rounded(context, Color.parseColor("#252525"), 14)
             setColorFilter(Color.WHITE)
         }
         private val name = TextView(context).apply {
@@ -46,7 +50,7 @@ class DeviceAdapter(
         }
         private val details = TextView(context).apply {
             textSize = 12f
-            setTextColor(Color.parseColor("#91A5C2"))
+            setTextColor(Color.parseColor("#BDBDBD"))
             maxLines = 2
             setPadding(0, dp(context, 3), 0, 0)
         }
@@ -81,8 +85,8 @@ class DeviceAdapter(
             details.text = line
             state.text = if (device.verified) "✓" else if (device.controllable) "›" else "·"
             state.setTextColor(
-                if (device.verified || device.controllable) Color.parseColor("#72F1CE")
-                else Color.parseColor("#647995")
+                if (device.verified || device.controllable) Color.parseColor("#F5F5F5")
+                else Color.parseColor("#969696")
             )
             row.setOnClickListener { onClick(device) }
         }
@@ -124,3 +128,4 @@ class DeviceAdapter(
         }
     }
 }
+

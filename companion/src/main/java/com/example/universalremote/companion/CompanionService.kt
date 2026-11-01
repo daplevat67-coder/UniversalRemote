@@ -1,5 +1,6 @@
 package com.example.universalremote.companion
 
+import com.example.universalremote.protocol.ResponseAuthentication
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
@@ -77,6 +78,11 @@ class CompanionService : Service() {
         }
         advertisementId = UUID.randomUUID().toString()
         ensureChannel()
+        val migration = getSharedPreferences("companion_meta", MODE_PRIVATE)
+        if (!migration.getBoolean("short_sessions_v1", false)) {
+            revokeAllControllers()
+            migration.edit().putBoolean("short_sessions_v1", true).apply()
+        }
         rotatePairCode()
         refreshPairedSnapshot()
         startForeground(NOTIFICATION_ID, notification("Готов к сопряжению"))
@@ -293,27 +299,28 @@ class CompanionService : Service() {
         secureStore.putBytes(sessionKeyName(clientId), sessionKey)
         secureStore.putString(nameKey(clientId), clientName)
         secureStore.putString(expiryKey(clientId), expiresAt.toString())
+        val responseKey = ResponseAuthentication.responseKey(sessionKey)
         sessionKey.fill(0)
         rotatePairCode()
         refreshPairedSnapshot()
-        return HttpResponse(200, JSONObject().apply {
+        return signedResponse(HttpResponse(200, JSONObject().apply {
             put("ok", true)
             put("message", "Сопряжение разрешено")
             put("deviceId", deviceId)
             put("sessionExpiresAt", expiresAt)
-        }.toString())
+        }.toString()), responseKey, "pair:$proofText")
     }
 
     private fun commandResponse(request: HttpRequest): HttpResponse {
         val auth = authenticateAndDecrypt(request) ?: return HttpResponse(401, json(false, "Подпись/сессия команды недействительна"))
         val action = runCatching { JSONObject(auth.plaintext).optString("action") }.getOrDefault("")
-        return executeAction(action)
+        return signedResponse(executeAction(action), auth.responseKey, "request:${request.headers["x-ur-signature"]}")
     }
 
     private fun revokeSelfResponse(request: HttpRequest): HttpResponse {
         val auth = authenticateAndDecrypt(request) ?: return HttpResponse(401, json(false, "Подпись/сессия отзыва недействительна"))
         revokeController(auth.clientId)
-        return HttpResponse(200, json(true, "Этот пульт отозван на Companion"))
+        return signedResponse(HttpResponse(200, json(true, "Этот пульт отозван на Companion")), auth.responseKey, "request:${request.headers["x-ur-signature"]}")
     }
 
     private fun authenticateAndDecrypt(request: HttpRequest): AuthPayload? {
@@ -341,7 +348,7 @@ class CompanionService : Service() {
             val payload = wrapper.optString("payload")
             if (payload.isBlank()) return null
             val plaintext = runCatching { CompanionCrypto.decryptSessionPayload(key, payload) }.getOrNull() ?: return null
-            AuthPayload(clientId, plaintext)
+            AuthPayload(clientId, plaintext, ResponseAuthentication.responseKey(key))
         } finally {
             key.fill(0)
         }
@@ -498,10 +505,15 @@ class CompanionService : Service() {
         return null
     }
 
+    private fun signedResponse(response: HttpResponse, key: ByteArray, binding: String): HttpResponse = try {
+        response.copy(signature = CompanionCrypto.b64(ResponseAuthentication.sign(key, binding, response.code, response.body)))
+    } finally { key.fill(0) }
+
     private fun writeResponse(out: BufferedOutputStream, response: HttpResponse) {
         val body = response.body.toByteArray(Charsets.UTF_8)
         val reason = when (response.code) { 200 -> "OK"; 400 -> "Bad Request"; 401 -> "Unauthorized"; 404 -> "Not Found"; 409 -> "Conflict"; 429 -> "Too Many Requests"; else -> "Error" }
-        val head = "HTTP/1.1 ${response.code} $reason\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${body.size}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+        val signatureHeader = response.signature?.let { "${ResponseAuthentication.HEADER}: $it\r\n" }.orEmpty()
+        val head = "HTTP/1.1 ${response.code} $reason\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${body.size}\r\nCache-Control: no-store\r\n${signatureHeader}Connection: close\r\n\r\n"
         out.write(head.toByteArray(Charsets.UTF_8)); out.write(body); out.flush()
     }
 
@@ -560,8 +572,8 @@ class CompanionService : Service() {
 
     private data class Challenge(val remote: String, val nonce: ByteArray, val expiresAt: Long)
     private data class HttpRequest(val method: String, val path: String, val headers: Map<String, String>, val body: String)
-    private data class HttpResponse(val code: Int, val body: String)
-    private data class AuthPayload(val clientId: String, val plaintext: String)
+    private data class HttpResponse(val code: Int, val body: String, val signature: String? = null)
+    private data class AuthPayload(val clientId: String, val plaintext: String, val responseKey: ByteArray)
 
     companion object {
         const val PORT = 45123
@@ -577,7 +589,7 @@ class CompanionService : Service() {
         private const val CHALLENGE_MS = 90_000L
         private const val CHALLENGE_WINDOW_MS = 60_000L
         private const val MAX_CHALLENGE_ATTEMPTS = 5
-        private const val SESSION_TTL_MS = 30L * 24L * 60L * 60L * 1000L
+        private const val SESSION_TTL_MS = 24L * 60L * 60L * 1000L
         private const val COMMAND_SKEW_MS = 90_000L
         private const val PAIR_WINDOW_MS = 60_000L
         private const val MAX_PAIR_ATTEMPTS = 5
@@ -595,3 +607,4 @@ class CompanionService : Service() {
         @Volatile var pairedControllers: List<PairedController> = emptyList()
     }
 }
+

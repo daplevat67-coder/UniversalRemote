@@ -50,10 +50,10 @@ class DiscoveryPermissionActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(26), dp(44), dp(26), dp(28))
-            setBackgroundColor(Color.rgb(7, 17, 31))
+            setBackgroundColor(Color.BLACK)
         }
 
-        root.addView(label("UNIVERSAL REMOTE • v${BuildConfig.VERSION_NAME}", 13f, Color.rgb(101, 230, 196), true))
+        root.addView(label("UNIVERSAL REMOTE • v${BuildConfig.VERSION_NAME}", 13f, Color.WHITE, true))
         root.addView(label("Разрешить поиск устройств", 28f, Color.WHITE, true).apply {
             setPadding(0, dp(18), 0, dp(12))
         })

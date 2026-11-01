@@ -9,12 +9,12 @@ on:
         default: false
         type: boolean
   push:
-    branches: [ main, master ]
+    branches: [ main, master, release/v0.9.7-store-rc ]
     paths:
       - "ios-companion/**"
       - ".github/workflows/build-ios-companion.yml"
   pull_request:
-    branches: [ main, master ]
+    branches: [ main, master, release/v0.9.7-store-rc ]
     paths:
       - "ios-companion/**"
       - ".github/workflows/build-ios-companion.yml"
@@ -53,6 +53,12 @@ jobs:
             exit 1
           fi
           echo "Xcode/SDK gate: passed" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify response authentication vectors
+        shell: bash
+        run: |
+          swiftc ios-companion/UniversalRemoteIOSCompanion/CompanionCrypto.swift ios-companion/tests/ResponseAuthenticationCheck.swift -o "$RUNNER_TEMP/response-auth-check"
+          "$RUNNER_TEMP/response-auth-check"
 
       - name: Install XcodeGen
         shell: bash

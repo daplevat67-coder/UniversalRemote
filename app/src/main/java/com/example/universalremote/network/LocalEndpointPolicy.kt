@@ -2,6 +2,8 @@ package com.example.universalremote.network
 
 import android.content.Context
 import android.net.Network
+import java.net.InetAddress
+import com.example.universalremote.protocol.LiteralIpv4
 import java.net.Inet4Address
 import java.net.URI
 
@@ -48,8 +50,8 @@ object LocalEndpointPolicy {
     fun currentNetwork(): Network? = appContext?.let { WifiNetworkResolver.lanInfo(it)?.network }
 
     /**
-     * Discovery-controlled URLs must point to the exact literal source IPv4. Hostnames are rejected.
-     * This closes multi-A DNS rebinding / TOCTOU between validation and the real HTTP/WebSocket connect.
+     * Both endpoints must be canonical IPv4 literals. Reject DNS names, IPv6 and alternate
+     * numeric forms so the transport cannot resolve a different address after validation.
      */
     fun samePrivateHost(expectedHost: String, url: String, allowedSchemes: Set<String>): Boolean = runCatching {
         val expected = literalIpv4(expectedHost) ?: return@runCatching false
@@ -59,7 +61,7 @@ object LocalEndpointPolicy {
         if (scheme !in allowedSchemes || uri.userInfo != null) return@runCatching false
         val targetHost = uri.host ?: return@runCatching false
         val target = literalIpv4(targetHost) ?: return@runCatching false
-        target == expected && isPrivateIpv4(targetHost)
+        target == expected && (uri.port == -1 || uri.port in 1..65535) && uri.fragment == null
     }.getOrDefault(false)
 
     fun requireSamePrivateHost(expectedHost: String, url: String, allowedSchemes: Set<String>) {
@@ -67,8 +69,8 @@ object LocalEndpointPolicy {
     }
 
     private fun literalIpv4(host: String): Inet4Address? {
-        val value = Ipv4Range.parseIp(host.trim()) ?: return null
-        return Ipv4Range.intToIpv4(value) as? Inet4Address
+        val bytes = LiteralIpv4.parse(host) ?: return null
+        return InetAddress.getByAddress(bytes) as? Inet4Address
     }
 
     private fun samePrefix(a: ByteArray, b: ByteArray, prefixLength: Int): Boolean {

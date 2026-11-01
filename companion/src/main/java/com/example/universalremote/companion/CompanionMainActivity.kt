@@ -47,12 +47,12 @@ class CompanionMainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(32, 56, 32, 32)
-            setBackgroundColor(Color.rgb(7, 17, 31))
+            setBackgroundColor(Color.BLACK)
         }
-        root.addView(label("UNIVERSALREMOTE COMPANION • v${BuildConfig.VERSION_NAME}", 13f, Color.rgb(101, 230, 196), true))
+        root.addView(label("UNIVERSALREMOTE COMPANION • v${BuildConfig.VERSION_NAME}", 13f, Color.WHITE, true))
         root.addView(label("Этот телефон можно управлять только после явного сопряжения.", 20f, Color.WHITE, true).apply { setPadding(0, 22, 0, 18) })
         root.addView(label("Одноразовый код • действует 5 минут", 13f, Color.LTGRAY, false))
-        code = label("———— ———— ————", 30f, Color.rgb(114, 241, 206), true).apply { setPadding(0, 8, 0, 12) }
+        code = label("———— ———— ————", 30f, Color.WHITE, true).apply { setPadding(0, 8, 0, 12) }
         root.addView(code)
         status = label("Служба не запущена", 14f, Color.LTGRAY, false).apply { setPadding(0, 0, 0, 18) }
         root.addView(status)
@@ -60,7 +60,7 @@ class CompanionMainActivity : AppCompatActivity() {
         root.addView(button("Новый pairing-код") { startService(Intent(this, CompanionService::class.java).setAction(CompanionService.ACTION_ROTATE)) })
         root.addView(button("Разрешить Home / Back / Recents") { showAccessibilityDisclosure() })
 
-        root.addView(label("СОПРЯЖЁННЫЕ ПУЛЬТЫ", 13f, Color.rgb(101, 230, 196), true).apply { setPadding(0, 24, 0, 8) })
+        root.addView(label("СОПРЯЖЁННЫЕ ПУЛЬТЫ", 13f, Color.WHITE, true).apply { setPadding(0, 24, 0, 8) })
         pairedBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(pairedBox, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         root.addView(button("Отозвать все пульты") {

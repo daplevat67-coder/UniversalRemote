@@ -9,6 +9,7 @@ on:
     paths:
       - "app/**"
       - "companion/**"
+      - "shared/**"
       - ".github/workflows/build-apk.yml"
       - "build.gradle.kts"
       - "settings.gradle.kts"
@@ -21,7 +22,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      VERSION: 0.9.11
+      VERSION: 0.9.12
       ANDROID_APPLICATION_ID: ${{ vars.ANDROID_APPLICATION_ID }}
       ANDROID_COMPANION_APPLICATION_ID: ${{ vars.ANDROID_COMPANION_APPLICATION_ID }}
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -77,10 +78,23 @@ jobs:
       - name: Upload verified debug APKs
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: UniversalRemote-v0.9.11-verified-debug-APKs
+          name: UniversalRemote-v0.9.12-verified-debug-APKs
           if-no-files-found: error
           retention-days: 30
           path: dist/android-debug/
+
+      - name: Verify Android 15 UI and capture previews
+        if: github.event_name == 'pull_request' && github.head_ref == 'ui/monochrome-smooth-v0.9.12'
+        timeout-minutes: 12
+        run: bash .github/scripts/capture-ui.sh
+
+      - name: Upload UI previews
+        if: always() && github.event_name == 'pull_request' && github.head_ref == 'ui/monochrome-smooth-v0.9.12'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: UniversalRemote-v0.9.12-ui-preview
+          path: dist/ui-preview/
+          if-no-files-found: warn
 
       - name: Check store identity and Android release signing
         id: android_signing
@@ -135,7 +149,7 @@ jobs:
         if: steps.android_signing.outputs.ready == 'true'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: UniversalRemote-v0.9.11-signed-store-artifacts
+          name: UniversalRemote-v0.9.12-signed-store-artifacts
           if-no-files-found: error
           retention-days: 30
           path: dist/android-release/

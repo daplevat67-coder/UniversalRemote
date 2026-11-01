@@ -1,6 +1,10 @@
 package com.example.universalremote
 
 import android.Manifest
+import android.animation.ValueAnimator
+import android.content.res.ColorStateList
+import android.graphics.drawable.RippleDrawable
+import androidx.recyclerview.widget.DefaultItemAnimator
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -150,28 +154,28 @@ class MainActivity : AppCompatActivity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(26), dp(18), dp(14))
-            background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c("#07111F"), c("#101B35"), c("#132842")))
+            setBackgroundColor(Color.BLACK)
         }
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
         val titleBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        titleBox.addView(text("UNIVERSAL REMOTE • v${BuildConfig.VERSION_NAME}", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+        titleBox.addView(text("UNIVERSAL REMOTE • v${BuildConfig.VERSION_NAME}", 12f, c("#FFFFFF"), true).apply { letterSpacing = .12f })
         titleBox.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
         header.addView(titleBox, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         header.addView(gearButton { showSettingsHub() }, LinearLayout.LayoutParams(dp(56), dp(52)).apply { marginStart = dp(10) })
         root.addView(header)
-        root.addView(text("Автоподключение по штатным LAN API • пароль/PIN используется только там, где протокол его реально поддерживает", 13f, c("#AABBD4"), false))
+        root.addView(text("Автоподключение по штатным LAN API • пароль/PIN используется только там, где протокол его реально поддерживает", 13f, c("#BDBDBD"), false))
 
         val radar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(18), dp(14), dp(18), dp(14))
-            background = rounded(c("#172946"), 22, c("#294466"))
+            background = rounded(c("#161616"), 22, c("#363636"))
         }
-        count = text("0", 42f, c("#72F1CE"), true)
-        hint = text("готово к поиску", 13f, c("#AABBD4"), false).apply { setPadding(dp(14), 0, 0, 0) }
+        count = text("0", 42f, c("#F5F5F5"), true)
+        hint = text("готово к поиску", 13f, c("#BDBDBD"), false).apply { setPadding(dp(14), 0, 0, 0) }
         radar.addView(count)
         radar.addView(hint, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         root.addView(radar, LinearLayout.LayoutParams(-1, dp(86)).apply { setMargins(0, dp(16), 0, dp(10)) })
@@ -179,22 +183,22 @@ class MainActivity : AppCompatActivity() {
         scanButton = Button(this).apply {
             text = "НАЙТИ ВСЕ УСТРОЙСТВА"
             textSize = 14f
-            setTextColor(c("#07111F"))
+            setTextColor(c("#000000"))
             isAllCaps = false
             typeface = Typeface.DEFAULT_BOLD
-            background = rounded(c("#72F1CE"), 17)
+            background = rounded(c("#F5F5F5"), 17)
             setOnClickListener { requestAndScan() }
         }
         root.addView(scanButton, LinearLayout.LayoutParams(-1, dp(54)))
 
         search = EditText(this).apply {
             hint = "Поиск: имя, IP, MAC, порт, бренд…"
-            setHintTextColor(c("#7185A3"))
+            setHintTextColor(c("#A0A0A0"))
             setTextColor(Color.WHITE)
             textSize = 14f
             setSingleLine(true)
             setPadding(dp(15), 0, dp(15), 0)
-            background = rounded(c("#101F36"), 14, c("#294466"))
+            background = rounded(c("#101010"), 14, c("#363636"))
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { query = s?.toString().orEmpty(); scheduleRender() }
@@ -207,7 +211,12 @@ class MainActivity : AppCompatActivity() {
             layoutManager = LinearLayoutManager(this@MainActivity)
             adapter = this@MainActivity.adapter
             setHasFixedSize(true)
-            itemAnimator = null
+            itemAnimator = if (ValueAnimator.areAnimatorsEnabled()) DefaultItemAnimator().apply {
+                supportsChangeAnimations = false
+                addDuration = 160L
+                removeDuration = 120L
+                moveDuration = 180L
+            } else null
             setPadding(0, dp(2), 0, dp(4))
             clipToPadding = false
         }
@@ -370,7 +379,7 @@ class MainActivity : AppCompatActivity() {
                         d.openPorts.joinToString { "${it.port} ${it.service} ${it.banner.orEmpty()}" }
                     ).any { q in it.lowercase() }
                 }
-                .sortedWith(compareBy<NearbyDevice> { it.distanceMeters == null }.thenBy { it.distanceMeters ?: Double.MAX_VALUE }.thenBy { it.name.lowercase() })
+                // Keep discovery order: live RSSI changes must not shuffle cards under the user's finger.
                 .toList()
             adapter.submitList(filtered)
         }, 140L)
@@ -378,12 +387,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun showSettingsHub() {
     val items = arrayOf(
-        "🔎 Фильтры устройств",
-        "📡 Настройки сканера",
-        "🔌 Подключение по IP / пароль / pairing",
-        "🧪 Диагностика поиска",
-        "📱 Android Companion",
-        "🍎 iPhone / iPad",
+        "⌕ Фильтры устройств",
+        "◎ Настройки сканера",
+        "↗ Подключение по IP / пароль / pairing",
+        "≡ Диагностика поиска",
+        "▯ Android Companion",
+        "○ iPhone / iPad",
         "♻ Сбросить поиск и источники"
     )
     AlertDialog.Builder(this)
@@ -483,10 +492,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun settingField(box: LinearLayout, label: String, value: String, hintValue: String): EditText {
-        box.addView(text(label, 12f, c("#AABBD4"), true).apply { setPadding(0, dp(8), 0, dp(3)) })
+        box.addView(text(label, 12f, c("#BDBDBD"), true).apply { setPadding(0, dp(8), 0, dp(3)) })
         return EditText(this).apply {
-            setText(value); hint = hintValue; setTextColor(Color.WHITE); setHintTextColor(c("#7185A3")); setSingleLine(true)
-            background = rounded(c("#101F36"), 10, c("#294466")); setPadding(dp(12), 0, dp(12), 0)
+            setText(value); hint = hintValue; setTextColor(Color.WHITE); setHintTextColor(c("#A0A0A0")); setSingleLine(true)
+            background = rounded(c("#101010"), 10, c("#363636")); setPadding(dp(12), 0, dp(12), 0)
             box.addView(this, LinearLayout.LayoutParams(-1, dp(46)).apply { bottomMargin = dp(4) })
         }
     }
@@ -566,9 +575,9 @@ class MainActivity : AppCompatActivity() {
         layout.addView(details)
         val analyzeButton = controlRow("↻ Повторить сетевой анализ") { analyzeDevice(currentDevice(initial.id), details) }
         layout.addView(analyzeButton)
-        val wolButton = controlRow("⚡ Wake-on-LAN") { sendWake(currentDevice(initial.id)) }
+        val wolButton = controlRow("↯ Wake-on-LAN") { sendWake(currentDevice(initial.id)) }
         if (currentDevice(initial.id).macAddress != null) layout.addView(wolButton)
-        val healthButton = controlRow("🧪 Проверить стабильность службы") { runHealthProbe(currentDevice(initial.id)) }
+        val healthButton = controlRow("≡ Проверить стабильность службы") { runHealthProbe(currentDevice(initial.id)) }
         layout.addView(healthButton)
         val currentBluetooth = currentDevice(initial.id)
         val bleCandidate = isBleDevice(currentBluetooth)
@@ -576,7 +585,7 @@ class MainActivity : AppCompatActivity() {
         val connectLabel = when {
             bleCandidate -> "🟦 BLE GATT / СОПРЯЖЕНИЕ"
             classicCandidate -> "🔵 BLUETOOTH / СОПРЯЖЕНИЕ"
-            else -> "⚡ БАЗОВОЕ УПРАВЛЕНИЕ / АВТО"
+            else -> "↯ БАЗОВОЕ УПРАВЛЕНИЕ / АВТО"
         }
         val controlTestButton = controlRow(connectLabel) {
             val current = currentDevice(initial.id)
@@ -587,11 +596,11 @@ class MainActivity : AppCompatActivity() {
         val d0 = currentDevice(initial.id)
         when {
             d0.verified -> layout.addView(controlRow("🎛 ОТКРЫТЬ ПУЛЬТ • API ✓") { showRemote(currentDevice(initial.id)) })
-            isRemoteCandidate(d0) -> layout.addView(controlRow("🔌 ВАРИАНТЫ ПОДКЛЮЧЕНИЯ") { showConnectionOptions(currentDevice(initial.id)) })
+            isRemoteCandidate(d0) -> layout.addView(controlRow("↗ ВАРИАНТЫ ПОДКЛЮЧЕНИЯ") { showConnectionOptions(currentDevice(initial.id)) })
             else -> layout.addView(controlRow("Как подключить управление") { showPairingInfo(d0) })
         }
         if (isAppleMobile(d0)) {
-            layout.addView(controlRow("🍎 iPhone / iPad: варианты управления") { showIosHelp(d0) })
+            layout.addView(controlRow("○ iPhone / iPad: варианты управления") { showIosHelp(d0) })
         }
 
         details.text = deviceDetailsText(d0) + if (hostOf(d0.address) != null || d0.ipAddress != null) "\n\nСетевой анализ запускается…" else ""
@@ -632,7 +641,7 @@ private fun showClassicBluetoothPanel(d: NearbyDevice) {
         13f, Color.WHITE, false
     ).apply { setTextIsSelectable(true) }
     layout.addView(status)
-    layout.addView(controlRow("🔐 ПОДКЛЮЧИТЬ / СОПРЯЧЬ ЧЕРЕЗ ANDROID") {
+    layout.addView(controlRow("◇ ПОДКЛЮЧИТЬ / СОПРЯЧЬ ЧЕРЕЗ ANDROID") {
         status.text = "⏳ Запускаю штатное Bluetooth-сопряжение для $address…"
         bleGatt.requestBond(address) { ok, message ->
             runOnUiThread {
@@ -651,7 +660,7 @@ private fun showClassicBluetoothPanel(d: NearbyDevice) {
     })
     layout.addView(text(
         "Bluetooth Classic не имеет одного универсального протокола управления. Для JBL/наушников Android после pairing обычно сам подключает аудиопрофиль. BLE GATT проверяется отдельно, если устройство dual-mode или публикует LE-интерфейс.",
-        12f, c("#AABBD4"), false
+        12f, c("#BDBDBD"), false
     ).apply { setPadding(0, dp(10), 0, 0) })
     scroll.addView(layout)
     AlertDialog.Builder(this).setTitle("Bluetooth • ${d.name}").setView(scroll).setNegativeButton("Закрыть", null).show()
@@ -671,7 +680,7 @@ private fun showBleGattPanel(d: NearbyDevice) {
         false
     ).apply { setTextIsSelectable(true) }
     layout.addView(status)
-    layout.addView(controlRow("🔎 ПОДКЛЮЧИТЬСЯ И ПРОЧИТАТЬ GATT") {
+    layout.addView(controlRow("⌕ ПОДКЛЮЧИТЬСЯ И ПРОЧИТАТЬ GATT") {
         status.text = "⏳ Подключение к $address и discoverServices()…"
         bleGatt.inspect(address) { result ->
             runOnUiThread {
@@ -684,7 +693,7 @@ private fun showBleGattPanel(d: NearbyDevice) {
             }
         }
     })
-    layout.addView(controlRow("🔐 ШТАТНОЕ BLUETOOTH-СОПРЯЖЕНИЕ") {
+    layout.addView(controlRow("◇ ШТАТНОЕ BLUETOOTH-СОПРЯЖЕНИЕ") {
         status.text = "⏳ Android запускает штатное Bluetooth pairing. Подтвердите PIN/код на системном экране и на устройстве, если он появится."
         bleGatt.requestBond(address) { ok, message ->
             runOnUiThread {
@@ -700,7 +709,7 @@ private fun showBleGattPanel(d: NearbyDevice) {
     layout.addView(text(
         "UniversalRemote не пишет случайные байты в неизвестные vendor-характеристики. Для реального пульта нужен известный формат команд конкретного BLE-протокола. Стандартные и vendor UUID теперь определяются автоматически, а pairing выполняет Android.",
         12f,
-        c("#AABBD4"),
+        c("#BDBDBD"),
         false
     ).apply { setPadding(0, dp(10), 0, 0) })
     scroll.addView(layout)
@@ -910,7 +919,7 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
                     "IPv4/API сейчас не подтверждён. Если устройство поддерживает Wake-on-LAN, можно попробовать включение по MAC. " +
                         "Выключение без штатного API невозможно: для него нужен поддерживаемый протокол самого устройства."
                 )
-                .setPositiveButton("⚡ Включить по Wake-on-LAN") { _, _ -> sendWake(d) }
+                .setPositiveButton("↯ Включить по Wake-on-LAN") { _, _ -> sendWake(d) }
                 .setNeutralButton("Варианты подключения") { _, _ -> showPairingInfo(d) }
                 .setNegativeButton("Закрыть", null)
                 .show()
@@ -928,8 +937,8 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
             return
         }
         val options = arrayOf(
-            "⚡ Авто — без пароля, если API это разрешает",
-            "🔐 Пароль / PIN / код / pairing — штатная авторизация",
+            "↯ Авто — без пароля, если API это разрешает",
+            "◇ Пароль / PIN / код / pairing — штатная авторизация",
             "🎥 PJLink — пароль проектора"
         )
         AlertDialog.Builder(this)
@@ -1190,19 +1199,19 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
         val scroll = ScrollView(this)
         val layout = remoteLayout(); scroll.addView(layout)
         val status = text(
-            if (companion.isPaired(info.deviceId)) "✓ Companion сопряжён • ${info.name}" else "Нужно один раз ввести код с экрана Companion на управляемом устройстве.",
-            13f, if (companion.isPaired(info.deviceId)) c("#72F1CE") else c("#AABBD4"), false
+            if (companion.isPaired(info.deviceId)) "✓ Companion сопряжён • ${info.name}" else "Введите код с экрана Companion. Доступ действует 24 часа; затем потребуется новый код.",
+            13f, if (companion.isPaired(info.deviceId)) c("#F5F5F5") else c("#BDBDBD"), false
         ).apply { setPadding(0, 0, 0, dp(8)) }
         layout.addView(status)
         val code = EditText(this).apply {
             hint = "12-символьный код Companion"
             setSingleLine(true)
             setTextColor(Color.WHITE)
-            setHintTextColor(c("#7185A3"))
+            setHintTextColor(c("#A0A0A0"))
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
         }
         layout.addView(code)
-        layout.addView(controlRow("🔐 Сопрячь это устройство") {
+        layout.addView(controlRow("◇ Сопрячь это устройство") {
             val editable = code.text
             val useful = editable.count { !it.isWhitespace() }
             val chars = CharArray(useful)
@@ -1222,21 +1231,21 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
             layout.addView(sectionTitle("IOS / IPADOS COMPANION"))
             layout.addView(text(
                 "iOS разрешает Companion только собственные функции приложения. Он не может эмулировать Home/Back/касания во всей iPadOS и не принимает PIN экрана как remote credential. Локальный listener может быть приостановлен системой, когда приложение уходит в фон.",
-                12f, c("#AABBD4"), false
+                12f, c("#BDBDBD"), false
             ))
             addRemoteRow(layout,
                 "✓ Ping" to { runCompanion(d, host, port, info.deviceId, "ping") },
-                "🔔 Найти" to { runCompanion(d, host, port, info.deviceId, "identify") }
+                "♪ Найти" to { runCompanion(d, host, port, info.deviceId, "identify") }
             )
             if (info.actions.any { it.startsWith("brightness_") }) {
                 layout.addView(sectionTitle("ЯРКОСТЬ ЭКРАНА"))
                 addRemoteRow(layout,
-                    "☀ −" to { runCompanion(d, host, port, info.deviceId, "brightness_down") },
+                    "☼ −" to { runCompanion(d, host, port, info.deviceId, "brightness_down") },
                     "50%" to { runCompanion(d, host, port, info.deviceId, "brightness_50") },
-                    "☀ +" to { runCompanion(d, host, port, info.deviceId, "brightness_up") }
+                    "☼ +" to { runCompanion(d, host, port, info.deviceId, "brightness_up") }
                 )
             }
-            layout.addView(controlRow("🍎 Что доступно без iOS Companion") { showIosHelp(d) })
+            layout.addView(controlRow("○ Что доступно без iOS Companion") { showIosHelp(d) })
         } else {
             val actions = info.actions
             val has = { action: String -> actions.isEmpty() || action in actions }
@@ -1254,7 +1263,7 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
             layout.addView(sectionTitle("СИСТЕМНАЯ НАВИГАЦИЯ"))
             layout.addView(text(
                 if (info.accessibility) "Accessibility Companion включён: Home/Back/Recents доступны." else "Home/Back/Recents требуют вручную включить Accessibility на управляемом Android. Companion не читает экран.",
-                12f, if (info.accessibility) c("#72F1CE") else c("#AABBD4"), false
+                12f, if (info.accessibility) c("#F5F5F5") else c("#BDBDBD"), false
             ))
             addRemoteRow(layout,
                 "⌂ Home" to { if (has("home")) runCompanion(d, host, port, info.deviceId, "home") else toast("Команда недоступна") },
@@ -1283,7 +1292,7 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
         scroll.addView(layout)
         val status = text(
             if (androidTv.isPaired(host)) "✓ Сопряжение сохранено криптографически. PIN не хранится." else "Нужно один раз подтвердить 6-значный код с экрана TV.",
-            13f, if (androidTv.isPaired(host)) c("#72F1CE") else c("#AABBD4"), false
+            13f, if (androidTv.isPaired(host)) c("#F5F5F5") else c("#BDBDBD"), false
         ).apply { setPadding(0, 0, 0, dp(8)) }
         layout.addView(status)
 
@@ -1291,10 +1300,10 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
             hint = "Код с TV: например A1B2C3"
             setSingleLine(true)
             setTextColor(Color.WHITE)
-            setHintTextColor(c("#7185A3"))
+            setHintTextColor(c("#A0A0A0"))
             inputType = InputType.TYPE_CLASS_TEXT
         }
-        layout.addView(controlRow("🔐 Начать сопряжение") {
+        layout.addView(controlRow("◇ Начать сопряжение") {
             status.text = "Подключаемся к pairing service…"
             androidTv.startPairing(host) { result -> runOnUiThread { status.text = result.message; toast(result.message) } }
         })
@@ -1309,7 +1318,7 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
         })
 
         layout.addView(powerOffRow("⏻ ПИТАНИЕ TV") { runAndroidTv(d, host, AndroidTvController.KEY_POWER) })
-        layout.addView(text("Android TV использует системную кнопку POWER: на некоторых моделях это toggle, а не отдельная команда Off.", 11f, c("#AABBD4"), false))
+        layout.addView(text("Android TV использует системную кнопку POWER: на некоторых моделях это toggle, а не отдельная команда Off.", 11f, c("#BDBDBD"), false))
         layout.addView(sectionTitle("НАВИГАЦИЯ"))
         addDpad(layout,
             { runAndroidTv(d, host, AndroidTvController.KEY_UP) },
@@ -1352,7 +1361,7 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
             if (!probe.ok) return@runOnUiThread toast(probe.message)
             val scroll = ScrollView(this)
             val layout = remoteLayout(); scroll.addView(layout)
-            layout.addView(text(info?.let { "${it.name} • ${it.model}" } ?: "Roku ECP", 13f, c("#72F1CE"), false))
+            layout.addView(text(info?.let { "${it.name} • ${it.model}" } ?: "Roku ECP", 13f, c("#F5F5F5"), false))
             layout.addView(powerOffRow("⏻ ВЫКЛЮЧИТЬ TV") { runRoku(d, host, "PowerOff") })
             layout.addView(sectionTitle("НАВИГАЦИЯ"))
             addDpad(layout,
@@ -1466,7 +1475,7 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
             samsung.isPaired(host) -> "✓ Samsung TV авторизован • TLS pin сохранён"
             !samsung.isTlsTrusted(host) -> "Сначала приложение покажет SHA-256 TLS fingerprint и попросит закрепить сертификат; только затем TV сможет выдать token."
             else -> "TLS pin подтверждён. При первом нажатии подтвердите «Разрешить» на телевизоре."
-        }, 13f, if (samsung.isPaired(host)) c("#72F1CE") else c("#AABBD4"), false))
+        }, 13f, if (samsung.isPaired(host)) c("#F5F5F5") else c("#BDBDBD"), false))
         layout.addView(powerOffRow("⏻ ВЫКЛЮЧИТЬ TV") { runSamsung(d, host, "KEY_POWEROFF") })
         layout.addView(sectionTitle("НАВИГАЦИЯ"))
         addDpad(layout,
@@ -1493,7 +1502,7 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
             "Menu" to { runSamsung(d, host, "KEY_MENU") },
             "Info" to { runSamsung(d, host, "KEY_INFO") }
         )
-        if (d.macAddress != null) layout.addView(controlRow("⚡ Включить через Wake-on-LAN") { sendWake(d) })
+        if (d.macAddress != null) layout.addView(controlRow("↯ Включить через Wake-on-LAN") { sendWake(d) })
         if (samsung.isPaired(host)) layout.addView(controlRow("Забыть разрешение Samsung") { samsung.forget(host); toast("Токен Samsung удалён") })
         AlertDialog.Builder(this).setTitle("Samsung TV • ${d.name}").setView(scroll).setNegativeButton("Закрыть", null).show()
     }
@@ -1513,10 +1522,10 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
                 !lgWebOs.isTlsTrusted(host) -> "Сначала подтвердите SHA-256 TLS fingerprint, затем разрешите Universal Remote на экране LG TV."
                 else -> "TLS pin подтверждён. Разрешите Universal Remote на экране LG TV."
             },
-            13f, if (lgWebOs.isPaired(host)) c("#72F1CE") else c("#AABBD4"), false
+            13f, if (lgWebOs.isPaired(host)) c("#F5F5F5") else c("#BDBDBD"), false
         )
         layout.addView(status)
-        layout.addView(controlRow("🔐 Проверить TLS / сопрячь TV") {
+        layout.addView(controlRow("◇ Проверить TLS / сопрячь TV") {
             ensureLgTls(host) {
                 lgWebOs.probe(host) { result -> runOnUiThread {
                     status.text = result.message
@@ -1528,15 +1537,15 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
         layout.addView(powerOffRow("⏻ ВЫКЛЮЧИТЬ TV") { runLg(d, host) { cb -> lgWebOs.powerOff(host, cb) } })
         layout.addView(sectionTitle("НАВИГАЦИЯ"))
         addDpad(layout,
-            { runLg(d, host) { cb -> lgWebOs.button(host, "UP", cb) } },
-            { runLg(d, host) { cb -> lgWebOs.button(host, "LEFT", cb) } },
-            { runLg(d, host) { cb -> lgWebOs.button(host, "ENTER", cb) } },
-            { runLg(d, host) { cb -> lgWebOs.button(host, "RIGHT", cb) } },
-            { runLg(d, host) { cb -> lgWebOs.button(host, "DOWN", cb) } }
+            { runLgButton(d, host, "UP") },
+            { runLgButton(d, host, "LEFT") },
+            { runLgButton(d, host, "ENTER") },
+            { runLgButton(d, host, "RIGHT") },
+            { runLgButton(d, host, "DOWN") }
         )
         addRemoteRow(layout,
-            "⌂ Home" to { runLg(d, host) { cb -> lgWebOs.button(host, "HOME", cb) } },
-            "↩ Back" to { runLg(d, host) { cb -> lgWebOs.button(host, "BACK", cb) } },
+            "⌂ Home" to { runLgButton(d, host, "HOME") },
+            "↩ Back" to { runLgButton(d, host, "BACK") },
             "⏻ Off" to { runLg(d, host) { cb -> lgWebOs.powerOff(host, cb) } }
         )
         addRemoteRow(layout,
@@ -1551,11 +1560,31 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
             "■" to { runLg(d, host) { cb -> lgWebOs.stop(host, cb) } },
             "⏩" to { runLg(d, host) { cb -> lgWebOs.fastForward(host, cb) } }
         )
-        if (d.macAddress != null) layout.addView(controlRow("⚡ Включить TV через Wake-on-LAN") { sendWake(d) })
+        if (d.macAddress != null) layout.addView(controlRow("↯ Включить TV через Wake-on-LAN") { sendWake(d) })
         layout.addView(controlRow("Забыть сопряжение LG TV") {
             lgWebOs.forget(host); status.text = "Ключ LG удалён. Следующее подключение снова попросит подтверждение на TV."
         })
         AlertDialog.Builder(this).setTitle("LG webOS • ${d.name}").setView(scroll).setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun runLgButton(d: NearbyDevice, host: String, key: String) {
+        ensureLgTls(host) {
+            lgWebOs.button(host, key, { result -> runOnUiThread {
+                if (result.requiresPlaintextConsent) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Отправить кнопку без шифрования?")
+                        .setMessage("LG TV $host использует открытый канал. Тот, кто перехватывает трафик сети, сможет увидеть или изменить эту команду. Разрешение действует только для одного нажатия.")
+                        .setNegativeButton("Отмена", null)
+                        .setPositiveButton("Отправить один раз") { _, _ ->
+                            lgWebOs.button(host, key, { sent -> runOnUiThread {
+                                toast(sent.message); if (sent.ok) markVerified(d.id)
+                            } }, allowPlaintextOnce = true)
+                        }.show()
+                } else {
+                    toast(result.message); if (result.ok) markVerified(d.id)
+                }
+            } })
+        }
     }
 
     private fun runLg(d: NearbyDevice, host: String, action: (((LgWebOsController.Result) -> Unit)) -> Unit) {
@@ -1592,7 +1621,7 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
 
     private fun showCastRemote(d: NearbyDevice, host: String) {
         val layout = remoteLayout()
-        layout.addView(text("Управление активным Cast-сеансом. Приложение не запускает произвольный медиапоток без Cast session.", 13f, c("#AABBD4"), false))
+        layout.addView(text("Управление активным Cast-сеансом. Приложение не запускает произвольный медиапоток без Cast session.", 13f, c("#BDBDBD"), false))
         layout.addView(sectionTitle("ГРОМКОСТЬ"))
         addRemoteRow(layout,
             "−5%" to { runCast(d) { cb -> cast.adjustVolume(host, -0.05, cb) } },
@@ -1621,7 +1650,7 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
                 !hue.isTlsTrusted(host) -> "После нажатия кнопки Bridge сначала подтвердите SHA-256 TLS fingerprint, затем будет запрошен application key."
                 else -> "TLS pin подтверждён. Нажмите физическую кнопку на Hue Bridge, затем авторизацию ниже."
             },
-            13f, if (hue.isPaired(host)) c("#72F1CE") else c("#AABBD4"), false
+            13f, if (hue.isPaired(host)) c("#F5F5F5") else c("#BDBDBD"), false
         )
         layout.addView(status)
         layout.addView(controlRow("🔗 Я нажал кнопку Bridge — авторизовать") {
@@ -1634,7 +1663,7 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
                 } }
             }
         })
-        layout.addView(controlRow("💡 Показать лампы этого Bridge") { openHueLightList(d, host) })
+        layout.addView(controlRow("◉ Показать лампы этого Bridge") { openHueLightList(d, host) })
         if (hue.isPaired(host)) layout.addView(controlRow("Забыть Hue Bridge") {
             hue.forget(host); status.text = "Авторизация Hue удалена"
         })
@@ -1693,7 +1722,7 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
 
     private fun showYeelightRemote(d: NearbyDevice, host: String, port: Int = yeelightPort(d)) {
         val layout = remoteLayout()
-        layout.addView(text("LAN Control • $host:$port. Для некоторых моделей его нужно один раз включить в официальном приложении Yeelight.", 13f, c("#AABBD4"), false))
+        layout.addView(text("LAN Control • $host:$port. Для некоторых моделей его нужно один раз включить в официальном приложении Yeelight.", 13f, c("#BDBDBD"), false))
         addRemoteRow(layout,
             "ВКЛ" to { runYeelight(d) { cb -> yeelight.power(host, true, port, cb) } },
             "ВЫКЛ" to { runYeelight(d) { cb -> yeelight.power(host, false, port, cb) } }
@@ -1733,7 +1762,7 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
 
     private fun showWledRemote(d: NearbyDevice, host: String, info: String) {
         val layout = remoteLayout()
-        layout.addView(text(info, 13f, c("#72F1CE"), false))
+        layout.addView(text(info, 13f, c("#F5F5F5"), false))
         addRemoteRow(layout,
             "ВКЛ" to { runWled(d) { cb -> wled.power(host, true, cb) } },
             "ВЫКЛ" to { runWled(d) { cb -> wled.power(host, false, cb) } }
@@ -1766,7 +1795,7 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
         setPadding(dp(18), dp(6), dp(18), dp(8))
     }
 
-    private fun sectionTitle(value: String) = text(value, 11f, c("#65E6C4"), true).apply { setPadding(0, dp(12), 0, dp(5)); letterSpacing = .08f }
+    private fun sectionTitle(value: String) = text(value, 11f, c("#FFFFFF"), true).apply { setPadding(0, dp(12), 0, dp(5)); letterSpacing = .08f }
 
     private fun addDpad(layout: LinearLayout, up: () -> Unit, left: () -> Unit, ok: () -> Unit, right: () -> Unit, down: () -> Unit) {
         addRemoteRow(layout, "" to {}, "▲" to up, "" to {})
@@ -1788,7 +1817,7 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
 
     private fun remoteKey(label: String, action: () -> Unit) = Button(this).apply {
         text = label; isAllCaps = false; textSize = 13f; setTextColor(Color.WHITE)
-        background = rounded(c("#172946"), 12, c("#294466")); setOnClickListener { action() }
+        background = rounded(c("#161616"), 12, c("#363636")); setOnClickListener { action() }
     }
 
     private fun showPairingInfo(d: NearbyDevice? = null) {
@@ -1950,7 +1979,7 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
     private fun controlRow(label: String, action: () -> Unit) = Button(this).apply { text = label; isAllCaps = false; setOnClickListener { action() } }
     private fun powerOffRow(label: String, action: () -> Unit) = Button(this).apply {
         text = label; isAllCaps = false; textSize = 15f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
-        background = rounded(c("#5A1F2B"), 12, c("#B54A5D")); setOnClickListener { action() }
+        background = rounded(c("#242424"), 12, c("#8C8C8C")); setOnClickListener { action() }
     }
     private fun gearButton(action: () -> Unit) = TextView(this).apply {
     text = "⚙"
@@ -1960,19 +1989,26 @@ private fun formatBleGattInspection(result: BleGattController.InspectionResult):
     contentDescription = "Настройки"
     isClickable = true
     isFocusable = true
-    background = rounded(c("#172946"), 14, c("#65E6C4"))
+    background = rounded(c("#161616"), 14, c("#FFFFFF"))
     setOnClickListener { action() }
 }
 
     private fun smallButton(label: String, action: () -> Unit) = Button(this).apply {
         text = label; textSize = 12f; setTextColor(Color.WHITE); isAllCaps = false
-        typeface = Typeface.DEFAULT_BOLD; background = rounded(c("#172946"), 14, c("#294466")); setOnClickListener { action() }
+        typeface = Typeface.DEFAULT_BOLD; background = rounded(c("#161616"), 14, c("#363636")); setOnClickListener { action() }
     }
     private fun text(value: String, size: Float, color: Int, bold: Boolean) = TextView(this).apply {
         text = value; textSize = size; setTextColor(color); if (bold) typeface = Typeface.DEFAULT_BOLD
     }
-    private fun rounded(fill: Int, radius: Int, stroke: Int? = null) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE; setColor(fill); cornerRadius = dp(radius).toFloat(); if (stroke != null) setStroke(dp(1), stroke)
+    private fun rounded(fill: Int, radius: Int, stroke: Int? = null): RippleDrawable {
+        val surface = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(fill)
+            cornerRadius = dp(radius).toFloat()
+            if (stroke != null) setStroke(dp(1), stroke)
+        }
+        val ripple = if (Color.red(fill) > 180) 0x22000000 else 0x30FFFFFF
+        return RippleDrawable(ColorStateList.valueOf(ripple), surface, null)
     }
     private fun toast(value: String) = Toast.makeText(this, value, Toast.LENGTH_SHORT).show()
     private fun plural(n: Int) = when {
