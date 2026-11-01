@@ -126,6 +126,10 @@ private final class ServerCore: @unchecked Sendable {
                 }
                 l.newConnectionHandler = { [weak self] c in self?.accept(c) }
                 self.listener = l
+                if self.store.getString("short_sessions_v1") != "1" {
+                    self.store.keys(prefix: "session_").forEach { self.revokeLocked(String($0.dropFirst("session_".count))) }
+                    self.store.putString("short_sessions_v1", "1")
+                }
                 self.rotatePairCodeLocked()
                 self.refreshPaired()
                 l.start(queue: self.queue)
@@ -206,7 +210,7 @@ private final class ServerCore: @unchecked Sendable {
             if let data { next.append(data) }
             if let request = self.parseRequest(next) {
                 let response = self.route(request, remote: remote)
-                let payload = self.httpResponse(code: response.0, body: response.1)
+                let payload = self.httpResponse(code: response.code, body: response.body, signature: response.signature)
                 c.send(content: payload, completion: .contentProcessed { _ in c.cancel() })
                 return
             }
@@ -238,7 +242,7 @@ private final class ServerCore: @unchecked Sendable {
         return Request(method: String(p[0]).uppercased(), path: String(p[1]).split(separator: "?").first.map(String.init) ?? "/", headers: headers, body: body)
     }
 
-    private func route(_ r: Request, remote: String) -> (Int, String) {
+    private func route(_ r: Request, remote: String) -> Response {
         cleanup()
         switch (r.method, r.path) {
         case ("GET", "/v2/info"):
@@ -248,40 +252,40 @@ private final class ServerCore: @unchecked Sendable {
                 "pairCodeExpiresIn": max(0, Int(pairCodeExpiry.timeIntervalSinceNow)),
                 "actions": ["ping", "identify", "brightness_down", "brightness_50", "brightness_up"]
             ]
-            return (200, json(obj))
+            return Response(200, json(obj))
         case ("GET", "/v2/challenge"):
             guard Date() < pairCodeExpiry else {
                 rotatePairCodeLocked()
-                return (409, json(["ok": false, "message": "Pairing-код обновлён; используйте новый код с экрана iPhone/iPad"]))
+                return Response(409, json(["ok": false, "message": "Pairing-код обновлён; используйте новый код с экрана iPhone/iPad"]))
             }
             guard allowAttempt(remote: remote, table: &challengeAttempts, window: challengeWindow, limit: maxChallengeAttempts) else {
-                return (429, json(["ok": false, "message": "Слишком много запросов pairing challenge; повторите позже"]))
+                return Response(429, json(["ok": false, "message": "Слишком много запросов pairing challenge; повторите позже"]))
             }
             // One active challenge per IP prevents one peer from exhausting the global pool.
             challenges = challenges.filter { $0.value.remote != remote }
             guard challenges.count < maxChallenges else {
-                return (429, json(["ok": false, "message": "Слишком много pairing challenge"]))
+                return Response(429, json(["ok": false, "message": "Слишком много pairing challenge"]))
             }
             let id = randomToken(18), nonce = randomData(32)
             challenges[id] = Challenge(remote: remote, nonce: nonce, expiresAt: Date().addingTimeInterval(90))
-            return (200, json(["ok": true, "challenge": id, "serverNonce": nonce.base64EncodedString(), "advertisementId": advertisementId, "expiresIn": 90]))
+            return Response(200, json(["ok": true, "challenge": id, "serverNonce": nonce.base64EncodedString(), "advertisementId": advertisementId, "expiresIn": 90]))
         case ("POST", "/v2/pair"):
             return pair(r.body, remote: remote)
         case ("POST", "/v2/command"):
-            guard let auth = authenticate(r) else { return (401, json(["ok": false, "message": "Недействительная сессия/подпись"])) }
-            guard let data = auth.plaintext.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let action = o["action"] as? String else { return (400, json(["ok": false, "message": "Некорректная команда"])) }
-            return execute(action)
+            guard let auth = authenticate(r) else { return Response(401, json(["ok": false, "message": "Недействительная сессия/подпись"])) }
+            guard let data = auth.plaintext.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let action = o["action"] as? String else { return signed(Response(400, json(["ok": false, "message": "Некорректная команда"])), key: auth.key, binding: "request:\(r.headers["x-ur-signature"] ?? "")") }
+            return signed(execute(action), key: auth.key, binding: "request:\(r.headers["x-ur-signature"] ?? "")")
         case ("POST", "/v2/revoke-self"):
-            guard let auth = authenticate(r) else { return (401, json(["ok": false, "message": "Недействительная сессия"])) }
-            revokeLocked(auth.clientId); refreshPaired(); return (200, json(["ok": true, "message": "Пульт отозван на iOS Companion"]))
+            guard let auth = authenticate(r) else { return Response(401, json(["ok": false, "message": "Недействительная сессия"])) }
+            revokeLocked(auth.clientId); refreshPaired(); return signed(Response(200, json(["ok": true, "message": "Пульт отозван на iOS Companion"])), key: auth.key, binding: "request:\(r.headers["x-ur-signature"] ?? "")")
         default:
-            return (404, json(["ok": false, "message": "Not found"]))
+            return Response(404, json(["ok": false, "message": "Not found"]))
         }
     }
 
-    private func pair(_ body: String, remote: String) -> (Int, String) {
+    private func pair(_ body: String, remote: String) -> Response {
         guard allowAttempt(remote: remote, table: &pairAttempts, window: pairWindow, limit: maxPairAttempts) else {
-            return (429, json(["ok": false, "message": "Слишком много попыток pairing; повторите позже"]))
+            return Response(429, json(["ok": false, "message": "Слишком много попыток pairing; повторите позже"]))
         }
         guard Date() < pairCodeExpiry,
               let data = body.data(using: .utf8),
@@ -294,26 +298,26 @@ private final class ServerCore: @unchecked Sendable {
               let challenge = challenges.removeValue(forKey: challengeId),
               challenge.remote == remote, challenge.expiresAt > Date(),
               let proof = Data(base64Encoded: proofText)
-        else { return (401, json(["ok": false, "message": "Pairing-код/challenge недействителен"])) }
+        else { return Response(401, json(["ok": false, "message": "Pairing-код/challenge недействителен"])) }
         let clientId = String(clientIdRaw.prefix(80))
         let clientName = String(clientNameRaw.prefix(80))
-        guard !clientId.isEmpty else { return (400, json(["ok": false, "message": "Некорректный clientId"])) }
+        guard !clientId.isEmpty else { return Response(400, json(["ok": false, "message": "Некорректный clientId"])) }
         let serverNonce = challenge.nonce.base64EncodedString()
         let codeBytes = Data(pairCode.utf8)
         let transcript = "pair\n\(challengeId)\n\(serverNonce)\n\(clientNonceText)\n\(clientId)\n\(clientName)"
         let expected = CompanionCrypto.hmac(key: codeBytes, text: transcript)
-        guard CompanionCrypto.constantTimeEqual(expected, proof) else { return (401, json(["ok": false, "message": "Неверный pairing-код"])) }
+        guard CompanionCrypto.constantTimeEqual(expected, proof) else { return Response(401, json(["ok": false, "message": "Неверный pairing-код"])) }
         let sessionTranscript = "session\n\(challengeId)\n\(serverNonce)\n\(clientNonceText)\n\(clientId)"
         let session = CompanionCrypto.hmac(key: codeBytes, text: sessionTranscript)
-        let expiry = Date().addingTimeInterval(30 * 24 * 60 * 60)
+        let expiry = Date().addingTimeInterval(24 * 60 * 60)
         store.put("session_\(clientId)", data: session)
         store.putString("name_\(clientId)", clientName)
         store.putString("expiry_\(clientId)", String(Int64(expiry.timeIntervalSince1970 * 1000)))
         rotatePairCodeLocked(); refreshPaired()
-        return (200, json(["ok": true, "message": "iOS Companion сопряжён", "deviceId": deviceId, "sessionExpiresAt": Int64(expiry.timeIntervalSince1970 * 1000)]))
+        return signed(Response(200, json(["ok": true, "message": "iOS Companion сопряжён", "deviceId": deviceId, "sessionExpiresAt": Int64(expiry.timeIntervalSince1970 * 1000)])), key: session, binding: "pair:\(proofText)")
     }
 
-    private struct Auth { let clientId: String; let plaintext: String }
+    private struct Auth { let clientId: String; let plaintext: String; let key: Data }
     private func authenticate(_ r: Request) -> Auth? {
         guard let clientId = r.headers["x-ur-client"],
               let timestamp = Int64(r.headers["x-ur-timestamp"] ?? ""),
@@ -330,21 +334,21 @@ private final class ServerCore: @unchecked Sendable {
         guard let data = r.body.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let payload = o["payload"] as? String,
               let clear = try? CompanionCrypto.decryptSessionPayload(key: key, encoded: payload) else { return nil }
         replay[replayKey] = Date()
-        return Auth(clientId: clientId, plaintext: clear)
+        return Auth(clientId: clientId, plaintext: clear, key: key)
     }
 
-    private func execute(_ action: String) -> (Int, String) {
+    private func execute(_ action: String) -> Response {
         switch action {
         case "ping":
             onAction?("Ping от сопряжённого UniversalRemote")
-            return (200, json(["ok": true, "message": "iOS Companion доступен"]))
+            return Response(200, json(["ok": true, "message": "iOS Companion доступен"]))
         case "identify":
             DispatchQueue.main.async {
                 AudioServicesPlaySystemSound(1007)
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
             }
             onAction?("Найти устройство: звук/отклик отправлен")
-            return (200, json(["ok": true, "message": "Команда Find выполнена в iOS Companion"]))
+            return Response(200, json(["ok": true, "message": "Команда Find выполнена в iOS Companion"]))
         case "brightness_down", "brightness_50", "brightness_up":
             DispatchQueue.main.async {
                 let current = UIScreen.main.brightness
@@ -355,9 +359,9 @@ private final class ServerCore: @unchecked Sendable {
                 }
             }
             onAction?("Яркость экрана изменена")
-            return (200, json(["ok": true, "message": "Яркость iPhone/iPad изменена Companion-приложением"]))
+            return Response(200, json(["ok": true, "message": "Яркость iPhone/iPad изменена Companion-приложением"]))
         default:
-            return (409, json(["ok": false, "message": "iOS не разрешает эту системную команду стороннему Companion"]))
+            return Response(409, json(["ok": false, "message": "iOS не разрешает эту системную команду стороннему Companion"]))
         }
     }
 
@@ -422,7 +426,22 @@ private final class ServerCore: @unchecked Sendable {
         return false
     }
 
-    private func httpResponse(code: Int, body: String) -> Data {
+    private struct Response {
+        let code: Int
+        let body: String
+        var signature: String?
+        init(_ code: Int, _ body: String, signature: String? = nil) {
+            self.code = code; self.body = body; self.signature = signature
+        }
+    }
+
+    private func signed(_ response: Response, key: Data, binding: String) -> Response {
+        var result = response
+        result.signature = CompanionCrypto.responseSignature(sessionKey: key, binding: binding, status: response.code, body: response.body)
+        return result
+    }
+
+    private func httpResponse(code: Int, body: String, signature: String?) -> Data {
         let reason: String
         switch code {
         case 200: reason = "OK"
@@ -434,7 +453,8 @@ private final class ServerCore: @unchecked Sendable {
         default: reason = "Error"
         }
         let bytes = Data(body.utf8)
-        let head = "HTTP/1.1 \(code) \(reason)\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: \(bytes.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+        let signatureHeader = signature.map { "X-UR-Response-Signature: \($0)\r\n" } ?? ""
+        let head = "HTTP/1.1 \(code) \(reason)\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: \(bytes.count)\r\nCache-Control: no-store\r\n\(signatureHeader)Connection: close\r\n\r\n"
         var result = Data(head.utf8)
         result.append(bytes)
         return result
@@ -455,3 +475,4 @@ private final class ServerCore: @unchecked Sendable {
         randomData(bytes).base64EncodedString().replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "=", with: "")
     }
 }
+

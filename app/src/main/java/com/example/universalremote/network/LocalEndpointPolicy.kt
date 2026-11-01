@@ -1,6 +1,7 @@
 package com.example.universalremote.network
 
 import android.content.Context
+import com.example.universalremote.protocol.LiteralIpv4
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.URI
@@ -25,8 +26,8 @@ object LocalEndpointPolicy {
     }
 
     /**
-     * Validates an advertised URL against the discovered source IPv4. The resolution result is obtained once
-     * and all answers must remain private; callers should prefer literal source IPv4 for the actual socket.
+     * Both endpoints must be canonical IPv4 literals. Reject DNS names, IPv6 and alternate
+     * numeric forms so the transport cannot resolve a different address after validation.
      */
     fun samePrivateHost(expectedHost: String, url: String, allowedSchemes: Set<String>): Boolean = runCatching {
         val expected = resolveIpv4(expectedHost) ?: return@runCatching false
@@ -35,21 +36,18 @@ object LocalEndpointPolicy {
         val scheme = uri.scheme?.lowercase() ?: return@runCatching false
         if (scheme !in allowedSchemes || uri.userInfo != null) return@runCatching false
         val targetHost = uri.host ?: return@runCatching false
-        val targets = resolveAllIpv4(targetHost)
-        targets.isNotEmpty() &&
-            targets.all { Ipv4Range.isPrivate(Ipv4Range.ipv4ToInt(it)) } &&
-            targets.any { it == expected }
+        val target = resolveIpv4(targetHost) ?: return@runCatching false
+        target == expected && (uri.port == -1 || uri.port in 1..65535) && uri.fragment == null
     }.getOrDefault(false)
 
     fun requireSamePrivateHost(expectedHost: String, url: String, allowedSchemes: Set<String>) {
         require(samePrivateHost(expectedHost, url, allowedSchemes)) { "LAN endpoint указывает на другой/публичный хост" }
     }
 
-    private fun resolveAllIpv4(host: String): List<Inet4Address> = runCatching {
-        InetAddress.getAllByName(host).filterIsInstance<Inet4Address>()
-    }.getOrDefault(emptyList())
-
-    private fun resolveIpv4(host: String): Inet4Address? = resolveAllIpv4(host).firstOrNull()
+    private fun resolveIpv4(host: String): Inet4Address? {
+        val bytes = LiteralIpv4.parse(host) ?: return null
+        return InetAddress.getByAddress(bytes) as? Inet4Address
+    }
 
     private fun samePrefix(a: ByteArray, b: ByteArray, prefixLength: Int): Boolean {
         if (a.size != 4 || b.size != 4 || prefixLength !in 0..32) return false
@@ -64,3 +62,4 @@ object LocalEndpointPolicy {
         return true
     }
 }
+

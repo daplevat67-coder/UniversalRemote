@@ -9,6 +9,7 @@ on:
     paths:
       - "app/**"
       - "companion/**"
+      - "shared/**"
       - ".github/workflows/build-apk.yml"
       - "build.gradle.kts"
       - "settings.gradle.kts"
@@ -117,3 +118,4 @@ jobs:
         shell: bash
         run: |
           rm -f "$RUNNER_TEMP/universalremote-release.jks"
+
