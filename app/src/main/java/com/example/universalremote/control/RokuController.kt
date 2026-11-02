@@ -1,5 +1,7 @@
 package com.example.universalremote.control
 
+import android.content.Context
+
 import com.example.universalremote.network.BoundedIo
 import com.example.universalremote.network.LocalEndpointPolicy
 import com.example.universalremote.network.XmlSecurity
@@ -8,14 +10,15 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
 
-class RokuController {
+class RokuController(context: Context) {
+    private val appContext = context.applicationContext
     data class Result(val ok: Boolean, val message: String)
     data class Info(val name: String, val model: String)
     private val executor = Executors.newFixedThreadPool(3)
 
     fun key(host: String, key: String, callback: (Result) -> Unit) = executor.execute {
         callback(runCatching {
-            require(LocalEndpointPolicy.isPrivateIpv4(host)) { "Roku: разрешены только private LAN IPv4" }
+            require(LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) { "Roku: разрешены только private LAN IPv4" }
             val conn = URL("http://$host:8060/keypress/$key").openConnection() as HttpURLConnection
             conn.instanceFollowRedirects = false
             conn.connectTimeout = 1500; conn.readTimeout = 1800; conn.requestMethod = "POST"; conn.doOutput = true
@@ -31,7 +34,7 @@ class RokuController {
 
     fun probe(host: String, callback: (Result, Info?) -> Unit) = executor.execute {
         val result = runCatching {
-            require(LocalEndpointPolicy.isPrivateIpv4(host)) { "Roku: разрешены только private LAN IPv4" }
+            require(LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) { "Roku: разрешены только private LAN IPv4" }
             val conn = URL("http://$host:8060/query/device-info").openConnection() as HttpURLConnection
             conn.instanceFollowRedirects = false
             conn.connectTimeout = 1400; conn.readTimeout = 1800; conn.requestMethod = "GET"

@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- Roku ECP, WLED and some UPnP devices are HTTP-only. Code restricts these calls to private same-host LAN endpoints and disables redirects. -->
+    <!-- Legacy LAN devices sometimes require cleartext. Controllers scope outgoing requests
+         to the current Wi-Fi subnet and do not follow HTTP redirects. Never send credentials
+         over HTTP-only LAN protocols. -->
     <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

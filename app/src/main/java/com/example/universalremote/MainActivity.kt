@@ -77,14 +77,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pjDiscovery: PjLinkDiscovery
     private lateinit var wifiDiscovery: WifiDiscovery
     private lateinit var yeelightDiscovery: YeelightDiscovery
-    private val upnp = UpnpController()
-    private val pjlink = PjLinkController()
-    private val roku = RokuController()
+    private lateinit var upnp: UpnpController
+    private lateinit var pjlink: PjLinkController
+    private lateinit var roku: RokuController
     private lateinit var samsung: SamsungTvController
-    private val wled = WledController()
+    private lateinit var wled: WledController
     private lateinit var cast: CastV2Controller
     private lateinit var companion: CompanionController
-    private val yeelight = YeelightController()
+    private lateinit var yeelight: YeelightController
     private lateinit var lgWebOs: LgWebOsController
     private lateinit var hue: HueController
     private lateinit var androidTv: AndroidTvController
@@ -123,6 +123,11 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         supportActionBar?.hide()
         ensureDiscoverySourcesEnabled()
+        upnp = UpnpController(this)
+        pjlink = PjLinkController(this)
+        roku = RokuController(this)
+        wled = WledController(this)
+        yeelight = YeelightController(this)
         androidTv = AndroidTvController(this)
         samsung = SamsungTvController(this)
         lgWebOs = LgWebOsController(this)
@@ -149,7 +154,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(26), dp(18), dp(14))
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c("#07111F"), c("#101B35"), c("#132842")))
         }
-        root.addView(text("UNIVERSAL REMOTE • v0.9.5", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+        root.addView(text("UNIVERSAL REMOTE • v0.9.7", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
         root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
         root.addView(text("Двухфазный LAN-поиск • Android + iOS/iPadOS Companion • Apple/Bonjour • API verification • TV • Cast • Hue • Yeelight • WLED", 13f, c("#AABBD4"), false))
 

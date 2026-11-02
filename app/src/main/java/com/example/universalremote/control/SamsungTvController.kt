@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /** Samsung Tizen LAN remote. Pairing is approved on the TV; token + TLS pin are stored encrypted. */
 class SamsungTvController(context: Context) {
+    private val appContext = context.applicationContext
     data class Result(val ok: Boolean, val message: String)
 
     private val executor = Executors.newFixedThreadPool(3)
@@ -31,7 +32,7 @@ class SamsungTvController(context: Context) {
     fun isTlsTrusted(host: String): Boolean = tofu.isPinned(host)
     fun inspectTls(host: String, callback: (Result, String?) -> Unit) = executor.execute {
         val result = runCatching {
-            require(LocalEndpointPolicy.isPrivateIpv4(host)) { "Samsung: адрес вне private LAN" }
+            require(LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) { "Samsung: адрес вне private LAN" }
             val fp = tofu.inspectFingerprint(host, 8002)
             Result(true, "Samsung TLS fingerprint получен") to fp
         }.getOrElse { Result(false, "Samsung TLS: ${it.message ?: it.javaClass.simpleName}") to null }
@@ -54,7 +55,7 @@ class SamsungTvController(context: Context) {
     /** Passive API identification. HTTP:8001 is allowed here only because no credential is sent. */
     fun probe(host: String, callback: (Result) -> Unit) {
         executor.execute {
-            if (!LocalEndpointPolicy.isPrivateIpv4(host)) return@execute callback(Result(false, "Samsung: разрешены только private LAN IPv4"))
+            if (!LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) return@execute callback(Result(false, "Samsung: разрешены только private LAN IPv4"))
             val urls = listOf("https://$host:8002/api/v2/", "http://$host:8001/api/v2/")
             var last = "Samsung Tizen API не найден"
             for (url in urls) {
@@ -79,7 +80,7 @@ class SamsungTvController(context: Context) {
     }
 
     private fun connectAndSend(host: String, key: String, callback: (Result) -> Unit, allowTokenReset: Boolean) {
-        if (!LocalEndpointPolicy.isPrivateIpv4(host)) return callback(Result(false, "Samsung: адрес вне private LAN"))
+        if (!LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) return callback(Result(false, "Samsung: адрес вне private LAN"))
         val name = Base64.encodeToString("Universal Remote".toByteArray(), Base64.NO_WRAP)
         if (!tofu.isPinned(host) && secrets.getString(tokenKey(host)) != null) {
             // v0.7.0 tokens were stored without an authenticated certificate binding; force one safe re-pair.

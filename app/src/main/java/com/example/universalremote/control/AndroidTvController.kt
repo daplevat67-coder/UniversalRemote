@@ -36,6 +36,7 @@ import javax.security.auth.x500.X500Principal
  * Pairing is performed with the six-character code displayed by the TV.
  */
 class AndroidTvController(context: Context) {
+    private val appContext = context.applicationContext
     data class Result(val ok: Boolean, val message: String)
 
     private val prefs = context.getSharedPreferences("android_tv_pairing", Context.MODE_PRIVATE)
@@ -249,7 +250,7 @@ class AndroidTvController(context: Context) {
     }
 
     private fun connectTls(host: String, port: Int, trust: X509TrustManager): SSLSocket {
-        require(LocalEndpointPolicy.isPrivateIpv4(host)) { "Android TV: разрешены только private LAN IPv4" }
+        require(LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) { "Android TV: разрешены только private LAN IPv4" }
         val context = SSLContext.getInstance("TLS").apply { init(arrayOf<KeyManager>(keyManager()), arrayOf<TrustManager>(trust), SecureRandom()) }
         val plain = Socket()
         plain.connect(InetSocketAddress(host, port), 2600)
