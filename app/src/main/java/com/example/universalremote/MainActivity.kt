@@ -55,6 +55,7 @@ import com.example.universalremote.model.NearbyDevice
 import com.example.universalremote.model.ScanConfig
 import com.example.universalremote.network.DeviceAnalyzer
 import com.example.universalremote.network.Ipv4Range
+import com.example.universalremote.network.LocalEndpointPolicy
 import com.example.universalremote.network.ServiceHealthProbe
 import com.example.universalremote.network.WifiNetworkResolver
 import com.example.universalremote.ui.DeviceAdapter
@@ -63,6 +64,7 @@ import java.net.URI
 
 class MainActivity : AppCompatActivity() {
     private val devices = linkedMapOf<String, NearbyDevice>()
+    private val authorizedLegacySession = mutableSetOf<String>()
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var count: TextView
     private lateinit var hint: TextView
@@ -149,7 +151,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(26), dp(18), dp(14))
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c("#07111F"), c("#101B35"), c("#132842")))
         }
-        root.addView(text("UNIVERSAL REMOTE • v0.9.5", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
+        root.addView(text("UNIVERSAL REMOTE • v0.9.7", 12f, c("#65E6C4"), true).apply { letterSpacing = .12f })
         root.addView(text("Устройства рядом", 30f, Color.WHITE, true).apply { setPadding(0, dp(5), 0, dp(4)) })
         root.addView(text("Двухфазный LAN-поиск • Android + iOS/iPadOS Companion • Apple/Bonjour • API verification • TV • Cast • Hue • Yeelight • WLED", 13f, c("#AABBD4"), false))
 
@@ -614,11 +616,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun sendWake(d: NearbyDevice) {
+    private fun sendWake(d: NearbyDevice) = withLegacyAuthorization(d, "Wake-on-LAN") {
         val mac = d.macAddress
         if (mac != null) {
             wol.wake(mac) { _, message -> runOnUiThread { toast(message) } }
-            return
+            return@withLegacyAuthorization
         }
         val field = EditText(this).apply { hint = "AA:BB:CC:DD:EE:FF"; setSingleLine(true) }
         AlertDialog.Builder(this).setTitle("Wake-on-LAN").setMessage("MAC не удалось получить автоматически. Введите MAC сетевой карты устройства.")
@@ -914,18 +916,29 @@ class MainActivity : AppCompatActivity() {
                 val host = input.text.toString().trim()
                 if (!host.matches(Regex("(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}"))) {
                     toast("Введите корректный IPv4")
-                } else if (!isInCurrentWifiSubnet(host)) {
-                    toast("Разрешены только private IPv4 текущей Wi‑Fi подсети")
+                } else if (!LocalEndpointPolicy.isPrivateIpv4(host)) {
+                    toast("Для ручной проверки разрешены только частные IPv4-адреса")
                 } else {
-                    val d = NearbyDevice(
-                        id = "manual:$host",
-                        name = "Устройство $host",
-                        kind = "Сетевое устройство",
-                        protocol = "Ручная проверка",
-                        address = host,
-                        ipAddress = host
-                    )
-                    detectAndOpenRemote(d)
+                    AlertDialog.Builder(this)
+                        .setTitle("Согласие на проверку • $host")
+                        .setMessage(
+                            "Вы указали адрес вручную. Проверка сетевых служб доступна только для " +
+                            "устройств, которые вы владеете или на проверку которых получили разрешение. " +
+                            "Приложение не может автоматически запросить согласие на экране неизвестного устройства."
+                        )
+                        .setNegativeButton("Отмена", null)
+                        .setPositiveButton("Разрешение получено") { _, _ ->
+                            val d = NearbyDevice(
+                                id = "manual:$host",
+                                name = "Устройство $host",
+                                kind = "Сетевое устройство",
+                                protocol = "Ручная проверка",
+                                address = host,
+                                ipAddress = host
+                            )
+                            detectAndOpenRemote(d)
+                        }
+                        .show()
                 }
             }.show()
     }
@@ -1136,7 +1149,7 @@ class MainActivity : AppCompatActivity() {
         } }
     }
 
-    private fun runRoku(d: NearbyDevice, host: String, key: String) {
+    private fun runRoku(d: NearbyDevice, host: String, key: String) = withLegacyAuthorization(d, "Roku ECP") {
         roku.key(host, key) { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
     }
 
@@ -1359,7 +1372,7 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle("Google Cast • ${d.name}").setView(layout).setNegativeButton("Закрыть", null).show()
     }
 
-    private fun runCast(d: NearbyDevice, action: (((CastV2Controller.Result) -> Unit)) -> Unit) {
+    private fun runCast(d: NearbyDevice, action: (((CastV2Controller.Result) -> Unit)) -> Unit) = withLegacyAuthorization(d, "Google Cast v2") {
         action { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
     }
 
@@ -1464,7 +1477,7 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle("Yeelight • ${d.name}").setView(layout).setNegativeButton("Закрыть", null).show()
     }
 
-    private fun runYeelight(d: NearbyDevice, action: (((YeelightController.Result) -> Unit)) -> Unit) {
+    private fun runYeelight(d: NearbyDevice, action: (((YeelightController.Result) -> Unit)) -> Unit) = withLegacyAuthorization(d, "Yeelight LAN") {
         action { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
     }
 
@@ -1507,7 +1520,7 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle("WLED • ${d.name}").setView(layout).setNegativeButton("Закрыть", null).show()
     }
 
-    private fun runWled(d: NearbyDevice, action: (((WledController.Result) -> Unit)) -> Unit) {
+    private fun runWled(d: NearbyDevice, action: (((WledController.Result) -> Unit)) -> Unit) = withLegacyAuthorization(d, "WLED HTTP") {
         action { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
     }
 
@@ -1568,7 +1581,7 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this).setTitle("UPnP-пульт • ${d.name}").setView(layout).setNegativeButton("Закрыть", null).show()
     }
 
-    private fun runUpnp(d: NearbyDevice, action: (((UpnpController.Result) -> Unit)) -> Unit) {
+    private fun runUpnp(d: NearbyDevice, action: (((UpnpController.Result) -> Unit)) -> Unit) = withLegacyAuthorization(d, "UPnP MediaRenderer") {
         action { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
     }
 
@@ -1586,12 +1599,13 @@ class MainActivity : AppCompatActivity() {
             .setView(layout).setNegativeButton("Закрыть", null).show()
     }
 
-    private fun sendPjLink(d: NearbyDevice, passwordField: EditText, host: String, action: (CharArray?, (PjLinkController.Result) -> Unit) -> Unit) {
-        val editable = passwordField.text
-        val password = if (editable != null && editable.any { !it.isWhitespace() }) CharArray(editable.length) { i -> editable[i] } else null
-        editable?.clear()
-        action(password) { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
-    }
+    private fun sendPjLink(d: NearbyDevice, passwordField: EditText, host: String, action: (CharArray?, (PjLinkController.Result) -> Unit) -> Unit) =
+        withLegacyAuthorization(d, "PJLink") {
+            val editable = passwordField.text
+            val password = if (editable != null && editable.any { !it.isWhitespace() }) CharArray(editable.length) { i -> editable[i] } else null
+            editable?.clear()
+            action(password) { result -> runOnUiThread { toast(result.message); if (result.ok) markVerified(d.id) } }
+        }
 
     private fun markVerified(id: String) {
         val existing = devices[id] ?: return
@@ -1623,6 +1637,37 @@ class MainActivity : AppCompatActivity() {
         ControlCapability.BRIGHTNESS -> "яркость"
         ControlCapability.COLOR -> "цвет"
         ControlCapability.FIND_DEVICE -> "найти устройство"
+    }
+
+    /**
+     * Some legacy control APIs have NO device-side approval screen or pairing handshake.
+     * Discovery is always possible, but sending commands requires an explicit assertion
+     * of prior owner authorization on this controller. This is not cryptographic consent;
+     * paired protocols (Companion, Android TV, Samsung, LG, Hue) retain native approval.
+     * Acknowledgements live only in memory, never as a permanent device allowlist.
+     */
+    private fun withLegacyAuthorization(d: NearbyDevice, protocol: String, action: () -> Unit) {
+        val host = d.ipAddress ?: hostOf(d.address)
+        if (host == null || !LocalEndpointPolicy.isPrivateIpv4(host)) {
+            toast("Управление доступно только по частному IPv4-адресу")
+            return
+        }
+        val key = "$protocol|$host"
+        if (key in authorizedLegacySession) return action()
+        AlertDialog.Builder(this)
+            .setTitle("Разрешение на управление • ${d.name}")
+            .setMessage(
+                "Устройство использует $protocol, где нет универсального запроса согласия на экране самого устройства. " +
+                "Сначала получите разрешение владельца устройства и включите управление в его настройках.\n\n" +
+                "Кнопка ниже подтверждает только ваше заявление о разрешении — это НЕ подтверждение с устройства. " +
+                "В этом запуске приложения повторный запрос для $host не потребуется."
+            )
+            .setNegativeButton("Отмена", null)
+            .setPositiveButton("Разрешение получено") { _, _ ->
+                authorizedLegacySession.add(key)
+                action()
+            }
+            .show()
     }
 
     private fun isInCurrentWifiSubnet(host: String): Boolean {

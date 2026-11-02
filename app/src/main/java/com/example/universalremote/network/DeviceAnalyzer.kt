@@ -16,8 +16,13 @@ class DeviceAnalyzer(context: Context) {
 
     fun analyze(device: NearbyDevice, config: ScanConfig, callback: (NearbyDevice) -> Unit) {
         val host = device.ipAddress ?: hostFrom(device.address) ?: return callback(device.copy(analysisNote = "IPv4-адрес не определён"))
-        if (!LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) {
-            return callback(device.copy(analysisNote = "Сетевой анализ заблокирован: адрес вне текущей Wi-Fi подсети"))
+        // Automatic discovery stays inside the current Wi-Fi subnet.
+        // An explicitly entered, private IPv4 may be checked beyond the subnet
+        // only after the user confirms authorization in the manual-IP dialog.
+        val withinWifi = LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)
+        val manuallyAuthorizedTarget = device.id == "manual:$host" && LocalEndpointPolicy.isPrivateIpv4(host)
+        if (!withinWifi && !manuallyAuthorizedTarget) {
+            return callback(device.copy(analysisNote = "Автоматический анализ ограничен текущей Wi-Fi подсетью; для разрешённого другого адреса используйте ручной IP"))
         }
         executor.execute {
             val network = WifiNetworkResolver.current(appContext)?.network

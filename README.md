@@ -1,3 +1,15 @@
+# UniversalRemote 0.9.7 — consent-aware device control
+
+**Discovery and control are separate.** The app finds nearby Bluetooth/Wi-Fi/LAN devices and verifies supported network APIs before offering control.
+
+- **Native device-side consent** remains required wherever the protocol supports it: Android TV displays a pairing code; Android/iOS Companion shows an expiring code; Samsung/LG televisions use manufacturer permission flows; Hue requires bridge authorization.
+- **Legacy protocols** such as Roku ECP, WLED, Yeelight, UPnP, PJLink and Google Cast have no universal way for this app to display a consent dialog on the target device. The app requires a one-time, session-only declaration that permission was obtained, before sending commands. **This is an acknowledgement on the controller, not remote cryptographic consent.**
+- **Scanning:** automatic LAN scanning stays on the current private Wi-Fi subnet (plus Bluetooth / advertised services). A user may *manually enter* a reachable private IPv4 beyond that subnet for an authorized inspection; there is no blanket "all networks" scan.
+- **Security:** published UPnP/LG URLs cannot redirect to other hosts or use rebinding hostnames; strict literal IPv4 parsing and regression tests are retained.
+- See `SECURITY.md` for boundaries and device-specific permission limits. Main Android and Companion version 0.9.7 (versionCode 20).
+
+---
+
 # Universal Remote 0.9.2 — APK + signed IPA from GitHub Actions
 
 - Android workflow now publishes clearly named installable APK artifacts for the main remote and Android Companion.
