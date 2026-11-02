@@ -89,7 +89,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var hue: HueController
     private lateinit var androidTv: AndroidTvController
     private lateinit var analyzer: DeviceAnalyzer
-    private val wol = WakeOnLanController()
+    private lateinit var wol: WakeOnLanController
     private lateinit var healthProbe: ServiceHealthProbe
     private var multicastLock: WifiManager.MulticastLock? = null
     private var renderPending = false
@@ -128,6 +128,7 @@ class MainActivity : AppCompatActivity() {
         roku = RokuController(this)
         wled = WledController(this)
         yeelight = YeelightController(this)
+        wol = WakeOnLanController(this)
         androidTv = AndroidTvController(this)
         samsung = SamsungTvController(this)
         lgWebOs = LgWebOsController(this)
