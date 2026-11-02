@@ -1,23 +1,31 @@
-# UniversalRemote security and trust boundaries
+# UniversalRemote security and consent
 
-## Intended use
-Only scan and control devices you own or are explicitly authorized to administer. Discovery identifies *candidates*; a reachable port does not prove that a device can be controlled.
+## Intended model
+UniversalRemote is a diagnostic tool and optional remote controller for devices you own or are authorized to manage. **Finding a device is not permission to control it.** A responsive port or successful API probe is not proof of control rights.
 
-## Scope
-All device control requests are restricted to literal private IPv4 addresses inside the currently connected physical Wi-Fi subnet. Control is unavailable when that network cannot be established. IP hostnames and URLs that point to any other host are rejected for UPnP/LG discovery. Controllers are not intended for remote administration over VPN, even if that network is private.
+## Discovery vs control
+- Automatic IPv4 discovery and network analysis operate on the connected private Wi-Fi network; Bluetooth/mDNS/SSDP discovery is subject to platform and routing limits.
+- Manual private IPv4 entry can target other *reachable* private networks only after the user confirms authorization to inspect the device. It does not make devices on unrelated networks discoverable automatically.
+- Controller commands for non-pairing legacy protocols require a separate session-only confirmation of prior owner permission. The app never records this statement as proof of device-side consent.
 
-## Authentication
-Companion actions require explicit pairing, a short-lived code, authenticated commands, and revocable sessions. The app cannot bypass Android/iOS lock screens. A compatible TV or IoT device may expose its own unauthenticated local-control API; use a trusted home Wi-Fi network and the manufacturer's access controls.
+## Device-side consent (where natively supported)
+- Android TV: pairing code shown on the TV.
+- Android/iOS Companion: time-limited pairing code shown in the Companion app; revocable authenticated session.
+- Samsung and LG: manufacturer pairing/approval behavior (model-dependent); TLS fingerprints confirmed on controller.
+- Hue: local bridge authorization / physical link button.
 
-## Cleartext
-The app enables Android cleartext network traffic because Roku ECP, some WLED, UPnP, and other legacy LAN devices require plain HTTP/TCP. Android's global cleartext permission does **not** make HTTP secure. These protocols should carry only non-sensitive control commands; never send passwords, tokens, or private data to an HTTP-only endpoint. When supported, paired/TLS protocols use certificates, keys or authenticated encryption.
+## No native consent prompt
+Roku ECP, WLED, Yeelight, UPnP, PJLink and Google Cast generally do not offer a standard authenticated consent screen for this app to invoke. For these protocols a controller-side authorization acknowledgment is **not** evidence the owner consented. To enforce device-side approval, use the manufacturer's access controls or install a trusted Companion where the target OS permits. The app must not emulate a native approval that the device cannot supply.
 
-## Known limitations
-- An attacker already present on the same Wi-Fi may tamper with unauthenticated legacy HTTP/TCP control traffic.
-- Wi-Fi client isolation and platform restrictions can prevent otherwise valid device discovery.
-- A network's subnet prefix is not a user authorization boundary; only control devices with permission.
-- TLS trust-on-first-use does not guarantee identity against an attacker active during initial pairing.
-- An Android device build and live tests on representative devices remain necessary.
+## Network security
+- Non-pairing private IPv4 controllers are permitted to address *reachable* private hosts; this is not a security boundary or a substitute for authorization.
+- Companion and LG retain their stricter current-Wi-Fi checks because of their existing trusted-network design.
+- SSDP/UPnP/LG discovered URLs require a literal IPv4 destination matching the advertising host, preventing a discovery response from sending control traffic to a different host or dynamically rebound hostname.
+- Legacy HTTP/plain TCP protocols lack cryptographic confidentiality; an attacker on the network may observe or tamper with traffic. Never send credentials to an unauthenticated HTTP endpoint.
+- TLS trust-on-first-use cannot independently defeat an active MITM during initial pairing.
+
+## Limitations
+No regular app can force an unrelated TV, IoT device, or phone to display an approval dialog when the target firmware has no matching API. Android Wi-Fi client isolation, segmented networks and protocol support constrain reachability. Static code changes are not a substitute for on-device testing.
 
 ## Reporting
-Use a private security report to the maintainer rather than posting exploits, access keys, or customer device details in public issues.
+Report security issues privately to the project maintainer. Do not post device credentials, tokens, or exploit details in public issues.

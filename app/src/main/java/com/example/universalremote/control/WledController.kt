@@ -1,7 +1,5 @@
 package com.example.universalremote.control
 
-import android.content.Context
-
 import com.example.universalremote.network.BoundedIo
 import com.example.universalremote.network.LocalEndpointPolicy
 import org.json.JSONArray
@@ -10,8 +8,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
 
-class WledController(context: Context) {
-    private val appContext = context.applicationContext
+class WledController {
     data class Result(val ok: Boolean, val message: String)
     private val executor = Executors.newFixedThreadPool(3)
 
@@ -49,7 +46,7 @@ class WledController(context: Context) {
     }
 
     private fun connection(host: String, path: String, method: String): HttpURLConnection {
-        require(LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) { "WLED: разрешены только private LAN IPv4" }
+        require(LocalEndpointPolicy.isPrivateIpv4(host)) { "WLED: разрешены только private LAN IPv4" }
         return (URL("http://$host$path").openConnection() as HttpURLConnection).apply {
             instanceFollowRedirects = false
             connectTimeout = 1400; readTimeout = 1800; requestMethod = method

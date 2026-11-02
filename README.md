@@ -1,10 +1,12 @@
-# UniversalRemote 0.9.7 — LAN control security hardening
+# UniversalRemote 0.9.7 — consent-aware device control
 
-- Restricts supported LAN controllers to the current physical Wi-Fi subnet, instead of any reachable private IPv4 network.
-- Untrusted UPnP and LG URL hosts must match the exact advertising IPv4. No DNS hostname, cross-host redirect, or ambiguous IPv4 form is trusted for controls.
-- Cleartext is retained only for legacy protocols that require it; see `SECURITY.md` for limitations.
-- Android main and Companion versions updated to 0.9.7 (versionCode 20); CI generates corresponding APKs.
-- Added regression tests for literal IPv4 parsing and strict same-host URL matching.
+**Discovery and control are separate.** The app finds nearby Bluetooth/Wi-Fi/LAN devices and verifies supported network APIs before offering control.
+
+- **Native device-side consent** remains required wherever the protocol supports it: Android TV displays a pairing code; Android/iOS Companion shows an expiring code; Samsung/LG televisions use manufacturer permission flows; Hue requires bridge authorization.
+- **Legacy protocols** such as Roku ECP, WLED, Yeelight, UPnP, PJLink and Google Cast have no universal way for this app to display a consent dialog on the target device. The app requires a one-time, session-only declaration that permission was obtained, before sending commands. **This is an acknowledgement on the controller, not remote cryptographic consent.**
+- **Scanning:** automatic LAN scanning stays on the current private Wi-Fi subnet (plus Bluetooth / advertised services). A user may *manually enter* a reachable private IPv4 beyond that subnet for an authorized inspection; there is no blanket "all networks" scan.
+- **Security:** published UPnP/LG URLs cannot redirect to other hosts or use rebinding hostnames; strict literal IPv4 parsing and regression tests are retained.
+- See `SECURITY.md` for boundaries and device-specific permission limits. Main Android and Companion version 0.9.7 (versionCode 20).
 
 ---
 

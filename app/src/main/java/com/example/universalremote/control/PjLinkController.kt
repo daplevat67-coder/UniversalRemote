@@ -1,7 +1,5 @@
 package com.example.universalremote.control
 
-import android.content.Context
-
 import com.example.universalremote.network.BoundedIo
 import com.example.universalremote.network.LocalEndpointPolicy
 import java.net.InetSocketAddress
@@ -10,8 +8,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.Executors
 
-class PjLinkController(context: Context) {
-    private val appContext = context.applicationContext
+class PjLinkController {
     data class Result(val ok: Boolean, val message: String)
     private val executor = Executors.newFixedThreadPool(3)
     private val random = SecureRandom()
@@ -56,7 +53,7 @@ class PjLinkController(context: Context) {
     }
 
     private fun execute(host: String, command: String, password: CharArray?): String {
-        require(LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) { "PJLink: разрешены только private LAN IPv4" }
+        require(LocalEndpointPolicy.isPrivateIpv4(host)) { "PJLink: разрешены только private LAN IPv4" }
         val socket = connect(host)
         socket.use {
             val input = it.getInputStream()
@@ -105,7 +102,7 @@ class PjLinkController(context: Context) {
     }
 
     private fun connect(host: String): Socket {
-        require(LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) { "PJLink: разрешены только private LAN IPv4" }
+        require(LocalEndpointPolicy.isPrivateIpv4(host)) { "PJLink: разрешены только private LAN IPv4" }
         return Socket().apply {
         connect(InetSocketAddress(host, 4352), 1800)
         soTimeout = 2300

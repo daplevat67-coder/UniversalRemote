@@ -1,7 +1,5 @@
 package com.example.universalremote.control
 
-import android.content.Context
-
 import com.example.universalremote.network.BoundedIo
 import com.example.universalremote.network.LocalEndpointPolicy
 import com.example.universalremote.network.XmlSecurity
@@ -12,8 +10,7 @@ import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
-class UpnpController(context: Context) {
-    private val appContext = context.applicationContext
+class UpnpController {
     data class Result(val ok: Boolean, val message: String)
     private data class Service(val type: String, val controlUrl: String, val host: String)
     private data class Services(val rendering: Service?, val transport: Service?)
@@ -66,7 +63,6 @@ class UpnpController(context: Context) {
     fun close() = executor.shutdownNow()
 
     private fun services(expectedHost: String, descriptionUrl: String): Services {
-        LocalEndpointPolicy.requireCurrentWifiSubnet(appContext, expectedHost)
         val key = "$expectedHost|$descriptionUrl"
         return cache[key] ?: discover(expectedHost, descriptionUrl).also { cache[key] = it }
     }
@@ -117,7 +113,6 @@ class UpnpController(context: Context) {
     }
 
     private fun soap(service: Service, action: String, inner: String): String {
-        LocalEndpointPolicy.requireCurrentWifiSubnet(appContext, service.host)
         LocalEndpointPolicy.requireSamePrivateHost(service.host, service.controlUrl, setOf("http", "https"))
         val body = """<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">

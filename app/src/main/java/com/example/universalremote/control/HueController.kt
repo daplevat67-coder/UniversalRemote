@@ -18,7 +18,6 @@ import java.util.concurrent.TimeUnit
 
 /** Philips Hue local API. Application keys and TOFU certificate pins are encrypted with Android Keystore. */
 class HueController(context: Context) {
-    private val appContext = context.applicationContext
     data class Result(val ok: Boolean, val message: String)
     data class Light(val id: String, val name: String)
 
@@ -32,7 +31,7 @@ class HueController(context: Context) {
     fun isTlsTrusted(host: String): Boolean = tofu.isPinned(host)
     fun inspectTls(host: String, callback: (Result, String?) -> Unit) = executor.execute {
         val pair = runCatching {
-            require(LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) { "Hue: адрес вне private LAN" }
+            require(LocalEndpointPolicy.isPrivateIpv4(host)) { "Hue: адрес вне private LAN" }
             Result(true, "Hue TLS fingerprint получен") to tofu.inspectFingerprint(host, 443)
         }.getOrElse { Result(false, "Hue TLS: ${it.message ?: it.javaClass.simpleName}") to null }
         callback(pair.first, pair.second)
@@ -48,7 +47,7 @@ class HueController(context: Context) {
 
     /** Passive bridge identification. HTTP fallback never carries an application key. */
     fun probe(host: String, callback: (Result) -> Unit) {
-        if (!LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) return callback(Result(false, "Hue: разрешены только private LAN IPv4"))
+        if (!LocalEndpointPolicy.isPrivateIpv4(host)) return callback(Result(false, "Hue: разрешены только private LAN IPv4"))
         val urls = listOf("https://$host/api/config", "http://$host/api/config")
         fun attempt(index: Int) {
             if (index >= urls.size) return callback(Result(false, "Philips Hue Bridge API не найден"))
@@ -73,7 +72,7 @@ class HueController(context: Context) {
     }
 
     fun pair(host: String, callback: (Result) -> Unit) {
-        if (!LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) return callback(Result(false, "Hue: адрес вне private LAN"))
+        if (!LocalEndpointPolicy.isPrivateIpv4(host)) return callback(Result(false, "Hue: адрес вне private LAN"))
         val body = JSONObject().put("devicetype", "universal_remote#android").put("generateclientkey", true).toString().toRequestBody(jsonType)
         val request = Request.Builder().url("https://$host/api").post(body).build()
         client(host).newCall(request).enqueue(object : okhttp3.Callback {
@@ -135,7 +134,7 @@ class HueController(context: Context) {
     }
 
     private fun api(host: String, method: String, path: String, body: JSONObject?, callback: (Result, String?) -> Unit) {
-        if (!LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) return callback(Result(false, "Hue: адрес вне private LAN"), null)
+        if (!LocalEndpointPolicy.isPrivateIpv4(host)) return callback(Result(false, "Hue: адрес вне private LAN"), null)
         if (!tofu.isPinned(host) && secrets.getString("key_$host") != null) {
             // Legacy v0.7.0 key has no certificate binding; require the physical Hue link button once more.
             secrets.remove("key_$host")

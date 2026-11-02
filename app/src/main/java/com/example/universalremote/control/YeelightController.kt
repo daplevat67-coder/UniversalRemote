@@ -1,7 +1,5 @@
 package com.example.universalremote.control
 
-import android.content.Context
-
 import com.example.universalremote.network.BoundedIo
 import com.example.universalremote.network.LocalEndpointPolicy
 import org.json.JSONArray
@@ -11,8 +9,7 @@ import java.net.Socket
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
-class YeelightController(context: Context) {
-    private val appContext = context.applicationContext
+class YeelightController {
     data class Result(val ok: Boolean, val message: String)
 
     private val executor = Executors.newFixedThreadPool(3)
@@ -34,7 +31,7 @@ class YeelightController(context: Context) {
     private fun send(host: String, port: Int, method: String, params: JSONArray, callback: (Result) -> Unit) {
         executor.execute {
             val result = runCatching {
-                require(LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) { "Yeelight: разрешены только private LAN IPv4" }
+                require(LocalEndpointPolicy.isPrivateIpv4(host)) { "Yeelight: разрешены только private LAN IPv4" }
                 require(port in 1..65535) { "Yeelight: некорректный порт" }
                 Socket().use { socket ->
                     socket.connect(InetSocketAddress(host, port), 1800)

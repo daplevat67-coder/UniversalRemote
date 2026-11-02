@@ -15,7 +15,6 @@ import javax.net.ssl.SSLSocket
 
 /** Minimal local Google Cast v2 controller. It controls an already-running Cast receiver; it does not launch arbitrary media. */
 class CastV2Controller(context: Context) {
-    private val appContext = context.applicationContext
     data class Result(val ok: Boolean, val message: String)
 
     private val executor = Executors.newFixedThreadPool(3)
@@ -26,7 +25,7 @@ class CastV2Controller(context: Context) {
     fun isTlsTrusted(host: String): Boolean = tofu.isPinned(host)
     fun inspectTls(host: String, callback: (Result, String?) -> Unit) = executor.execute {
         val pair = runCatching {
-            require(LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) { "Cast: адрес вне private LAN" }
+            require(LocalEndpointPolicy.isPrivateIpv4(host)) { "Cast: адрес вне private LAN" }
             Result(true, "Cast TLS fingerprint получен") to tofu.inspectFingerprint(host, 8009)
         }.getOrElse { Result(false, "Cast TLS: ${it.message ?: it.javaClass.simpleName}") to null }
         callback(pair.first, pair.second)
@@ -75,7 +74,7 @@ class CastV2Controller(context: Context) {
     private fun run(host: String, callback: (Result) -> Unit, block: (Session) -> Result) {
         executor.execute {
             val result = runCatching {
-                require(LocalEndpointPolicy.isInCurrentWifiSubnet(appContext, host)) { "разрешены только private LAN IPv4" }
+                require(LocalEndpointPolicy.isPrivateIpv4(host)) { "разрешены только private LAN IPv4" }
                 open(host).use { socket ->
                     val value = block(Session(socket))
                     if (value.ok) tofu.pin(host, socket)
